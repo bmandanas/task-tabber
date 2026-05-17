@@ -9,9 +9,11 @@ const COLOR_PRESETS = [
 let sb = null;
 let currentUser = null;
 let state = { categories: [], tasks: [] };
-let activeFilter  = 'all';
-let editingCatId  = null;
-let editingTaskId = null;
+let activeFilter      = 'all';
+let activeView        = 'list'; // 'list' | 'gantt'
+let editingCatId      = null;
+let editingTaskId     = null;
+let editingNoteTaskId = null;
 
 // ===== DATE HELPERS =====
 
@@ -37,6 +39,19 @@ function getStreak(task) {
     d.setDate(d.getDate() - 1);
   }
   return streak;
+}
+
+// Last N days ending today, oldest first
+function lastNDays(n) {
+  const days = [];
+  const base = new Date();
+  base.setHours(0, 0, 0, 0);
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(base);
+    d.setDate(base.getDate() - i);
+    days.push(dateToStr(d));
+  }
+  return days;
 }
 
 // ===== SECURITY =====
@@ -96,9 +111,7 @@ async function signIn() {
   if (error) document.getElementById('login-error').textContent = error.message;
 }
 
-async function signOut() {
-  await sb.auth.signOut();
-}
+async function signOut() { await sb.auth.signOut(); }
 
 // ===== DATA LAYER =====
 
@@ -112,12 +125,13 @@ async function loadData() {
   state.categories = cats.map(r => ({ id: r.id, name: r.name, color: r.color }));
   state.tasks = tasks.map(r => ({
     id: r.id,
-    categoryId:   r.category_id,
-    title:        r.title,
-    points:       r.points,
-    completed:    r.completed,
-    completedAt:  r.completed_at,
-    datesWorked:  r.dates_worked || []
+    categoryId:  r.category_id,
+    title:       r.title,
+    points:      r.points,
+    completed:   r.completed,
+    completedAt: r.completed_at,
+    datesWorked: r.dates_worked || [],
+    note:        r.note || null
   }));
 }
 
@@ -180,7 +194,6 @@ function renderCatTabs() {
 function renderCatDetail() {
   const el  = document.getElementById('cat-detail');
   const cat = state.categories.find(c => c.id === activeFilter);
-
   if (!cat) { el.classList.remove('visible'); return; }
 
   const tasks     = state.tasks.filter(t => t.categoryId === activeFilter);
@@ -199,11 +212,117 @@ function renderCatDetail() {
     `<div class="cat-detail-item"><span class="cat-detail-label">DAYS</span><span class="cat-detail-val">${workDays}</span></div>`;
 }
 
+function renderCategoryChips() {
+  if (activeFilter !== 'all' || state.categories.length === 0) return '';
+  const chips = state.categories.map(cat =>
+    `<div class="cat-chip" data-action="filter-cat" data-id="${esc(cat.id)}" style="--chip-color:${esc(cat.color)}">` +
+      `<span class="cat-chip-dot" style="background:${esc(cat.color)}"></span>` +
+      `<span class="cat-chip-name">${esc(cat.name)}</span>` +
+      `<button class="cat-chip-x" data-action="del-cat" data-id="${esc(cat.id)}" title="Remove category">✕</button>` +
+    `</div>`
+  ).join('');
+  return `<div class="cat-chips">${chips}</div>`;
+}
+
+function renderGantt(tasks) {
+  const days   = lastNDays(30);
+  const todayD = today();
+
+  const hdrCells = days.map(day => {
+    const isToday    = day === todayD;
+    const dayNum     = parseInt(day.split('-')[2], 10);
+    const isMonthStart = dayNum === 1;
+    const label      = isToday ? '·T·'
+      : isMonthStart ? new Date(day + 'T12:00:00').toLocaleString('default', { month: 'short' })
+      : dayNum;
+    const cls = ['gantt-date-hdr', isToday && 'today', isMonthStart && 'month-start']
+      .filter(Boolean).join(' ');
+    return `<th class="${cls}">${label}</th>`;
+  }).join('');
+
+  if (tasks.length === 0) {
+    return `<div class="task-list-empty">NO TASKS YET<br>HIT + TASK TO ADD ONE</div>`;
+  }
+
+  const rows = tasks.map(task => {
+    const cat   = state.categories.find(c => c.id === task.categoryId);
+    const color = cat ? cat.color : '#666666';
+    const cells = days.map(day => {
+      const worked  = (task.datesWorked || []).includes(day);
+      const isToday = day === todayD;
+      const cls     = ['gantt-cell', worked && 'worked', isToday && 'today'].filter(Boolean).join(' ');
+      const style   = worked ? ` style="--cell-color:${esc(color)}"` : '';
+      return `<td class="${cls}"${style}></td>`;
+    }).join('');
+
+    const noteTitle = task.note ? ` title="${esc(task.note)}"` : '';
+    return `<tr class="gantt-row${task.completed ? ' done' : ''}">` +
+      `<td class="gantt-task-label gantt-sticky"${noteTitle} data-action="edit" data-id="${esc(task.id)}">${esc(task.title)}</td>` +
+      cells +
+    `</tr>`;
+  }).join('');
+
+  return `<div class="gantt"><table class="gantt-table">` +
+    `<thead><tr>` +
+      `<th class="gantt-task-hdr gantt-sticky">TASK</th>${hdrCells}` +
+    `</tr></thead>` +
+    `<tbody>${rows}</tbody>` +
+  `</table></div>`;
+}
+
+function renderTaskItem(task, todayD) {
+  const cat     = state.categories.find(c => c.id === task.categoryId);
+  const color   = cat ? cat.color  : '#666666';
+  const catName = cat ? cat.name   : '?';
+  const days    = (task.datesWorked || []).length;
+  const loggedToday = (task.datesWorked || []).includes(todayD);
+  const streak      = loggedToday ? getStreak(task) : 0;
+
+  const logTitle = loggedToday
+    ? `${streak} day${streak !== 1 ? 's' : ''} in a row — click to un-log today`
+    : 'Log work for today';
+
+  const noteDot  = task.note ? `<span class="task-note-dot" title="${esc(task.note)}"></span>` : '';
+  const titleAttr = task.note ? ` title="${esc(task.note)}"` : '';
+
+  return (
+    `<div class="task-item${task.completed ? ' done' : ''}" style="--task-color:${esc(color)}">` +
+      `<div class="px-checkbox${task.completed ? ' checked' : ''}" data-action="toggle" data-id="${esc(task.id)}" title="${task.completed ? 'Mark incomplete' : 'Mark complete'}">` +
+        (task.completed ? '✓' : '') +
+      `</div>` +
+      `<div class="task-body">` +
+        `<div class="task-title" data-action="edit" data-id="${esc(task.id)}"${titleAttr}>${esc(task.title)}${noteDot}</div>` +
+        `<div class="task-meta">` +
+          `<span class="task-cat-badge" style="background:${esc(color)}">${esc(catName)}</span>` +
+          `<span class="task-days-badge">⏱ ${days}d worked</span>` +
+        `</div>` +
+      `</div>` +
+      `<div class="task-actions">` +
+        `<span class="pts-badge" title="Points value">★ ${task.points} pts</span>` +
+        `<button class="px-btn px-btn-small px-btn-log${loggedToday ? ' logged' : ''}" ` +
+          `data-action="log" data-id="${esc(task.id)}" title="${esc(logTitle)}">` +
+          (loggedToday ? `STREAK` : `+LOG`) +
+        `</button>` +
+        `<details class="task-menu">` +
+          `<summary title="More options">⋮</summary>` +
+          `<div class="task-menu-items">` +
+            `<button class="task-menu-item" data-action="note" data-id="${esc(task.id)}">` +
+              `📝 ${task.note ? 'EDIT NOTE' : 'ADD NOTE'}` +
+            `</button>` +
+            `<button class="task-menu-item danger" data-action="del" data-id="${esc(task.id)}">` +
+              `🗑 DELETE` +
+            `</button>` +
+          `</div>` +
+        `</details>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
 function renderTasks() {
   const list    = document.getElementById('task-list');
   const titleEl = document.getElementById('task-section-title');
   const ptsEl   = document.getElementById('total-pts');
-  list.innerHTML = '';
 
   const tasks = activeFilter === 'all'
     ? state.tasks
@@ -216,8 +335,27 @@ function renderTasks() {
   const total  = tasks.reduce((s, t) => s + t.points, 0);
   ptsEl.textContent = total > 0 ? `★ ${earned} / ${total} PTS` : '';
 
+  let html = '';
+
+  // Category chips (ALL tab only)
+  html += renderCategoryChips();
+
+  // View toggle
+  html +=
+    `<div class="view-toggle">` +
+      `<button class="view-btn${activeView === 'list'  ? ' active' : ''}" data-view="list">LIST</button>` +
+      `<button class="view-btn${activeView === 'gantt' ? ' active' : ''}" data-view="gantt">GANTT</button>` +
+    `</div>`;
+
+  if (activeView === 'gantt') {
+    html += renderGantt(tasks);
+    list.innerHTML = html;
+    return;
+  }
+
   if (tasks.length === 0) {
-    list.innerHTML = '<div class="task-list-empty">NO TASKS YET<br>HIT + TASK TO ADD ONE</div>';
+    html += '<div class="task-list-empty">NO TASKS YET<br>HIT + TASK TO ADD ONE</div>';
+    list.innerHTML = html;
     return;
   }
 
@@ -225,60 +363,21 @@ function renderTasks() {
   const complete   = tasks.filter(t =>  t.completed);
   const todayD     = today();
 
-  incomplete.forEach(task => renderTaskItem(list, task, todayD));
+  html += incomplete.map(t => renderTaskItem(t, todayD)).join('');
 
   if (incomplete.length > 0 && complete.length > 0) {
-    const div = document.createElement('div');
-    div.className = 'task-divider';
-    div.textContent = '— COMPLETED —';
-    list.appendChild(div);
+    html += '<div class="task-divider">— COMPLETED —</div>';
   }
 
-  complete.forEach(task => renderTaskItem(list, task, todayD));
-}
-
-function renderTaskItem(container, task, todayD) {
-  const cat     = state.categories.find(c => c.id === task.categoryId);
-  const color   = cat ? cat.color  : '#666666';
-  const catName = cat ? cat.name   : '?';
-  const days    = (task.datesWorked || []).length;
-  const loggedToday = (task.datesWorked || []).includes(todayD);
-  const streak  = loggedToday ? getStreak(task) : 0;
-
-  const logLabel = loggedToday ? `✓${streak}d` : '+LOG';
-  const logTitle = loggedToday
-    ? `${streak} day${streak !== 1 ? 's' : ''} in a row — click to un-log today`
-    : 'Log work today';
-
-  const item = document.createElement('div');
-  item.className = 'task-item' + (task.completed ? ' done' : '');
-  item.style.setProperty('--task-color', color);
-
-  item.innerHTML =
-    `<div class="px-checkbox${task.completed ? ' checked' : ''}" data-action="toggle" data-id="${esc(task.id)}">` +
-      (task.completed ? '✓' : '') +
-    `</div>` +
-    `<div class="task-body">` +
-      `<div class="task-title" data-action="edit" data-id="${esc(task.id)}">${esc(task.title)}</div>` +
-      `<div class="task-meta">` +
-        `<span class="task-cat-badge" style="background:${esc(color)}">${esc(catName)}</span>` +
-        `<span class="task-days-badge">⏱ ${days}d</span>` +
-      `</div>` +
-    `</div>` +
-    `<div class="task-actions">` +
-      `<span class="pts-badge">★ ${task.points}</span>` +
-      `<button class="px-btn px-btn-small px-btn-log${loggedToday ? ' logged' : ''}" ` +
-        `data-action="log" data-id="${esc(task.id)}" title="${esc(logTitle)}">${esc(logLabel)}</button>` +
-      `<button class="px-btn px-btn-small px-btn-del" data-action="del" data-id="${esc(task.id)}" title="Delete">✕</button>` +
-    `</div>`;
-
-  container.appendChild(item);
+  html += complete.map(t => renderTaskItem(t, todayD)).join('');
+  list.innerHTML = html;
 }
 
 // ===== MODALS =====
 
 function openCatModal(catId = null) {
   editingCatId = catId;
+  document.getElementById('modal-note').style.display = 'none';
   document.getElementById('modal-task').style.display = 'none';
   document.getElementById('modal-cat').style.display  = 'block';
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -309,6 +408,7 @@ function closeCatModal() {
 
 function openTaskModal(taskId = null) {
   editingTaskId = taskId;
+  document.getElementById('modal-note').style.display = 'none';
   document.getElementById('modal-cat').style.display  = 'none';
   document.getElementById('modal-task').style.display = 'block';
   document.getElementById('modal-overlay').classList.remove('hidden');
@@ -352,6 +452,23 @@ function openTaskModal(taskId = null) {
 function closeTaskModal() {
   document.getElementById('modal-overlay').classList.add('hidden');
   editingTaskId = null;
+}
+
+function openNoteModal(taskId) {
+  editingNoteTaskId = taskId;
+  const task = state.tasks.find(t => t.id === taskId);
+  document.getElementById('modal-cat').style.display  = 'none';
+  document.getElementById('modal-task').style.display = 'none';
+  document.getElementById('modal-note').style.display = 'block';
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  const input = document.getElementById('note-input');
+  input.value = task.note || '';
+  input.focus();
+}
+
+function closeNoteModal() {
+  document.getElementById('modal-overlay').classList.add('hidden');
+  editingNoteTaskId = null;
 }
 
 function buildColorPresets(selected) {
@@ -416,13 +533,22 @@ async function saveTask() {
   } else {
     const { data, error } = await sb.from('tasks')
       .insert({ title, category_id: catId, points: pts,
-                completed: false, completed_at: null, dates_worked: [] })
+                completed: false, completed_at: null, dates_worked: [], note: null })
       .select('id').single();
     if (error) { console.error(error); return; }
     state.tasks.push({ id: data.id, title, categoryId: catId, points: pts,
-      completed: false, completedAt: null, datesWorked: [] });
+      completed: false, completedAt: null, datesWorked: [], note: null });
   }
   closeTaskModal(); render();
+}
+
+async function saveNote() {
+  const note = document.getElementById('note-input').value.trim() || null;
+  const { error } = await sb.from('tasks').update({ note }).eq('id', editingNoteTaskId);
+  if (error) { console.error(error); return; }
+  const task = state.tasks.find(t => t.id === editingNoteTaskId);
+  task.note = note;
+  closeNoteModal(); render();
 }
 
 async function toggleTask(taskId) {
@@ -448,10 +574,10 @@ async function toggleTask(taskId) {
 }
 
 async function toggleWorkDay(taskId) {
-  const task = state.tasks.find(t => t.id === taskId);
-  const d    = today();
+  const task        = state.tasks.find(t => t.id === taskId);
+  const d           = today();
   const datesWorked = [...(task.datesWorked || [])];
-  const idx  = datesWorked.indexOf(d);
+  const idx         = datesWorked.indexOf(d);
   if (idx === -1) datesWorked.push(d);
   else            datesWorked.splice(idx, 1);
 
@@ -481,6 +607,7 @@ function setupEvents() {
     state.categories.length === 0 ? openCatModal() : openTaskModal();
   });
 
+  // Category modal
   document.getElementById('btn-cat-cancel').addEventListener('click', closeCatModal);
   document.getElementById('btn-cat-save').addEventListener('click', saveCategory);
   document.getElementById('cat-name-input').addEventListener('keydown', e => {
@@ -497,6 +624,7 @@ function setupEvents() {
     buildColorPresets(sw.dataset.color);
   });
 
+  // Task modal
   document.getElementById('btn-task-cancel').addEventListener('click', closeTaskModal);
   document.getElementById('btn-task-save').addEventListener('click', saveTask);
   document.getElementById('task-title-input').addEventListener('keydown', e => {
@@ -512,10 +640,21 @@ function setupEvents() {
     inp.value = Math.min(9999, (parseInt(inp.value) || 1) + 1);
   });
 
-  document.getElementById('modal-overlay').addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') { closeCatModal(); closeTaskModal(); }
+  // Note modal
+  document.getElementById('btn-note-cancel').addEventListener('click', closeNoteModal);
+  document.getElementById('btn-note-save').addEventListener('click', saveNote);
+  document.getElementById('note-input').addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeNoteModal();
   });
 
+  // Overlay backdrop
+  document.getElementById('modal-overlay').addEventListener('click', e => {
+    if (e.target.id === 'modal-overlay') {
+      closeCatModal(); closeTaskModal(); closeNoteModal();
+    }
+  });
+
+  // Category tabs
   document.getElementById('cat-tabs').addEventListener('click', e => {
     const actionEl = e.target.closest('[data-action]');
     if (actionEl) {
@@ -526,14 +665,30 @@ function setupEvents() {
     if (tab) { activeFilter = tab.dataset.catId; render(); }
   });
 
+  // Task list — handles chips, view toggle, and all task actions
   document.getElementById('task-list').addEventListener('click', e => {
+    // View toggle
+    const viewBtn = e.target.closest('[data-view]');
+    if (viewBtn) { activeView = viewBtn.dataset.view; render(); return; }
+
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const { action, id } = el.dataset;
-    if      (action === 'toggle') toggleTask(id);
-    else if (action === 'edit')   openTaskModal(id);
-    else if (action === 'log')    toggleWorkDay(id);
-    else if (action === 'del')    deleteTask(id);
+
+    if      (action === 'filter-cat') { activeFilter = id; render(); }
+    else if (action === 'del-cat')    { deleteCategory(id); }
+    else if (action === 'new-cat')    { openCatModal(); }
+    else if (action === 'toggle')     { toggleTask(id); }
+    else if (action === 'edit')       { openTaskModal(id); }
+    else if (action === 'log')        { toggleWorkDay(id); }
+    else if (action === 'note') {
+      el.closest('details')?.removeAttribute('open');
+      openNoteModal(id);
+    }
+    else if (action === 'del') {
+      el.closest('details')?.removeAttribute('open');
+      deleteTask(id);
+    }
   });
 }
 
