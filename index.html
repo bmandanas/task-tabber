@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TASK TABBER</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Login screen -->
+  <div id="login-screen" class="login-screen">
+    <div class="login-box">
+      <div class="login-icon">▶</div>
+      <div class="login-title">TASK TABBER</div>
+      <div class="login-sub">SIGN IN TO SAVE YOUR TASKS</div>
+      <button id="btn-google-signin" class="px-btn px-btn-primary login-btn">
+        ▶ SIGN IN WITH GOOGLE
+      </button>
+      <div id="login-error" class="login-error"></div>
+    </div>
+  </div>
+
+  <!-- Main app (hidden until signed in) -->
+  <div id="app" style="display:none">
+    <header class="app-header">
+      <div class="header-brand">
+        <span class="brand-icon">▶</span>
+        <h1 class="brand-title">TASK TABBER</h1>
+      </div>
+      <div class="header-actions">
+        <span id="user-email" class="user-email"></span>
+        <button id="btn-signout" class="px-btn px-btn-small">OUT</button>
+        <button id="btn-new-category" class="px-btn px-btn-primary">+ CAT</button>
+        <button id="btn-new-task" class="px-btn px-btn-primary">+ TASK</button>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div id="cat-tabs" class="cat-tabs"></div>
+      <div id="cat-detail" class="cat-detail"></div>
+
+      <div class="main-content">
+        <div class="section-header">
+          <span class="section-title" id="task-section-title">◈ ALL TASKS</span>
+          <span class="total-pts" id="total-pts"></span>
+        </div>
+        <div id="task-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal-box" id="modal-cat" style="display:none">
+      <div class="modal-title" id="modal-cat-title">■ NEW CATEGORY</div>
+      <div class="px-field">
+        <label class="px-label" for="cat-name-input">NAME</label>
+        <input type="text" id="cat-name-input" class="px-input" maxlength="20" placeholder="Category name...">
+      </div>
+      <div class="px-field">
+        <label class="px-label">COLOR</label>
+        <div class="color-row">
+          <input type="color" id="cat-color-input" class="px-color-input" value="#ff4757">
+          <div class="color-presets" id="color-presets"></div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="px-btn" id="btn-cat-cancel">CANCEL</button>
+        <button class="px-btn px-btn-primary" id="btn-cat-save">SAVE</button>
+      </div>
+    </div>
+
+    <div class="modal-box" id="modal-task" style="display:none">
+      <div class="modal-title" id="modal-task-title">■ NEW TASK</div>
+      <div class="px-field">
+        <label class="px-label" for="task-title-input">TITLE</label>
+        <input type="text" id="task-title-input" class="px-input" maxlength="50" placeholder="Task title...">
+      </div>
+      <div class="px-field">
+        <label class="px-label" for="task-cat-select">CATEGORY</label>
+        <select id="task-cat-select" class="px-select"></select>
+      </div>
+      <div class="px-field">
+        <label class="px-label" for="task-pts-input">POINTS</label>
+        <div class="points-row">
+          <button class="px-btn px-btn-small" id="pts-dec">−</button>
+          <input type="number" id="task-pts-input" class="px-input pts-input" value="1" min="1" max="9999">
+          <button class="px-btn px-btn-small" id="pts-inc">+</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="px-btn" id="btn-task-cancel">CANCEL</button>
+        <button class="px-btn px-btn-primary" id="btn-task-save">SAVE</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
