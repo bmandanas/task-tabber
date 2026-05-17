@@ -53,7 +53,22 @@ body {
   flex-shrink: 0;
 }
 
+.header-left  { display: flex; align-items: center; gap: 10px; }
 .header-brand { display: flex; align-items: center; gap: 8px; }
+
+.logout-btn {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  border-radius: 2px;
+}
+.logout-btn:hover { color: var(--danger); border-color: var(--danger); }
 
 .brand-icon {
   font-size: 13px;
@@ -361,6 +376,15 @@ body {
 }
 .px-btn-primary:hover  { background: var(--accent-dk); border-color: var(--accent-dk); color: #fff; }
 .px-btn-primary:active { box-shadow: none; transform: translate(3px, 3px); }
+
+.px-btn-cat {
+  background: #e67700;
+  border-color: #e67700;
+  color: #fff;
+  box-shadow: 3px 3px 0 #a34d00;
+}
+.px-btn-cat:hover  { background: #cc6a00; border-color: #cc6a00; color: #fff; }
+.px-btn-cat:active { box-shadow: none; transform: translate(3px, 3px); }
 
 .px-btn-small { padding: 4px 7px; font-size: 7px; line-height: 1; }
 
@@ -756,6 +780,38 @@ body {
   font-size: 11px;
   letter-spacing: 2px;
   margin-bottom: 10px;
+}
+
+.login-divider {
+  font-size: 5px;
+  color: var(--text-faint);
+  letter-spacing: 3px;
+  margin: 14px 0;
+}
+
+.login-btn-demo {
+  background: none;
+  border-color: var(--border);
+  color: var(--text-dim);
+  font-size: 6px;
+  width: 100%;
+}
+.login-btn-demo:hover { border-color: var(--border-hi); color: var(--text); }
+
+/* ===== DEMO BANNER ===== */
+
+.demo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 14px;
+  background: rgba(250,176,5,0.1);
+  border-bottom: 2px solid var(--warn);
+  font-family: var(--px-font);
+  font-size: 6px;
+  color: var(--warn);
+  flex-shrink: 0;
+  gap: 10px;
 }
 
 .login-sub {

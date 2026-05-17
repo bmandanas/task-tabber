@@ -19,24 +19,35 @@
       <button id="btn-google-signin" class="px-btn px-btn-primary login-btn">
         ▶ SIGN IN WITH GOOGLE
       </button>
+      <div class="login-divider">— OR —</div>
+      <button id="btn-try-demo" class="px-btn login-btn login-btn-demo">
+        TRY WITHOUT SIGNING IN
+      </button>
       <div id="login-error" class="login-error"></div>
     </div>
   </div>
 
-  <!-- Main app (hidden until signed in) -->
+  <!-- Main app (hidden until signed in / demo) -->
   <div id="app" style="display:none">
     <header class="app-header">
-      <div class="header-brand">
-        <span class="brand-icon">▶</span>
-        <h1 class="brand-title">TASK TABBER</h1>
+      <div class="header-left">
+        <button id="btn-signout" class="logout-btn">log out</button>
+        <div class="header-brand">
+          <span class="brand-icon">▶</span>
+          <h1 class="brand-title">TASK TABBER</h1>
+        </div>
       </div>
       <div class="header-actions">
         <span id="user-email" class="user-email"></span>
-        <button id="btn-signout" class="px-btn px-btn-small">OUT</button>
-        <button id="btn-new-category" class="px-btn px-btn-primary">+ CAT</button>
+        <button id="btn-new-category" class="px-btn px-btn-cat">+ CAT</button>
         <button id="btn-new-task" class="px-btn px-btn-primary">+ TASK</button>
       </div>
     </header>
+
+    <div id="demo-banner" class="demo-banner" style="display:none">
+      <span>⚠ DEMO MODE — data saved in this browser only</span>
+      <button id="btn-exit-demo" class="px-btn px-btn-small">SIGN IN TO SYNC →</button>
+    </div>
 
     <div class="app-body">
       <div id="cat-tabs" class="cat-tabs"></div>

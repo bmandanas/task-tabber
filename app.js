@@ -3,17 +3,62 @@ const COLOR_PRESETS = [
   '#7bed9f', '#2ed573', '#70a1ff', '#5352ed',
   '#a29bfe', '#fd79a8', '#eccc68', '#57606f'
 ];
+const DEMO_KEY = 'pixel-tasks-demo';
 
 // ===== STATE =====
 
 let sb = null;
-let currentUser = null;
-let state = { categories: [], tasks: [] };
+let currentUser  = null;
+let isDemoMode   = false;
+let state        = { categories: [], tasks: [] };
 let activeFilter      = 'all';
-let activeView        = 'list'; // 'list' | 'gantt'
+let activeView        = 'list';
 let editingCatId      = null;
 let editingTaskId     = null;
 let editingNoteTaskId = null;
+
+// ===== SOUNDS =====
+
+let audioCtx = null;
+
+function getAudio() {
+  if (audioCtx) return audioCtx;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {}
+  return audioCtx;
+}
+
+function playSound(type) {
+  const ctx = getAudio();
+  if (!ctx) return;
+  try {
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    osc.type = 'square';
+
+    // [frequencies[], duration, volume]
+    const sounds = {
+      click:      [[330],           0.06, 0.05],
+      open:       [[400],           0.05, 0.04],
+      save:       [[440, 554],      0.16, 0.07],
+      complete:   [[523, 659, 784], 0.24, 0.08],
+      uncomplete: [[660, 440],      0.16, 0.05],
+      log:        [[440, 554],      0.13, 0.06],
+      unlog:      [[554, 370],      0.13, 0.05],
+      del:        [[300, 220],      0.16, 0.05],
+    };
+    const [freqs, dur, vol] = sounds[type] || sounds.click;
+
+    gain.gain.setValueAtTime(vol, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    const step = dur / freqs.length;
+    freqs.forEach((f, i) => osc.frequency.setValueAtTime(f, now + i * step));
+    osc.start(now);
+    osc.stop(now + dur + 0.05);
+  } catch (_) {}
+}
 
 // ===== DATE HELPERS =====
 
@@ -34,14 +79,10 @@ function getStreak(task) {
   let streak = 0;
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  while (worked.has(dateToStr(d))) {
-    streak++;
-    d.setDate(d.getDate() - 1);
-  }
+  while (worked.has(dateToStr(d))) { streak++; d.setDate(d.getDate() - 1); }
   return streak;
 }
 
-// Last N days ending today, oldest first
 function lastNDays(n) {
   const days = [];
   const base = new Date();
@@ -54,6 +95,10 @@ function lastNDays(n) {
   return days;
 }
 
+function genId() {
+  return 'demo-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
 // ===== SECURITY =====
 
 function esc(str) {
@@ -62,13 +107,34 @@ function esc(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// ===== DEMO MODE =====
+
+function loadDemoData() {
+  try {
+    const raw = localStorage.getItem(DEMO_KEY);
+    if (raw) state = JSON.parse(raw);
+  } catch (_) {}
+}
+
+function saveDemoData() {
+  localStorage.setItem(DEMO_KEY, JSON.stringify(state));
+}
+
+function enterDemoMode() {
+  isDemoMode = true;
+  loadDemoData();
+  document.getElementById('demo-banner').style.display = 'flex';
+  document.getElementById('btn-signout').style.display = 'none';
+  showApp();
+}
+
 // ===== AUTH =====
 
 async function initApp() {
   if (!window.SUPABASE_URL || window.SUPABASE_URL === 'YOUR_SUPABASE_URL') {
-    document.getElementById('login-screen').style.display = 'flex';
     document.getElementById('login-error').textContent = 'config.js not filled in — see SETUP.md';
     document.getElementById('btn-google-signin').disabled = true;
+    showLogin();
     return;
   }
 
@@ -76,10 +142,13 @@ async function initApp() {
 
   sb.auth.onAuthStateChange(async (event, session) => {
     if (session) {
+      isDemoMode  = false;
       currentUser = session.user;
       await loadData();
+      document.getElementById('demo-banner').style.display = 'none';
+      document.getElementById('btn-signout').style.display = '';
       showApp();
-    } else {
+    } else if (!isDemoMode) {
       currentUser = null;
       state = { categories: [], tasks: [] };
       showLogin();
@@ -98,11 +167,13 @@ function showLogin() {
 function showApp() {
   document.getElementById('login-screen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
-  document.getElementById('user-email').textContent = currentUser?.email || '';
+  const email = isDemoMode ? 'DEMO' : (currentUser?.email || '');
+  document.getElementById('user-email').textContent = email;
   render();
 }
 
 async function signIn() {
+  playSound('click');
   document.getElementById('login-error').textContent = '';
   const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
@@ -111,7 +182,16 @@ async function signIn() {
   if (error) document.getElementById('login-error').textContent = error.message;
 }
 
-async function signOut() { await sb.auth.signOut(); }
+async function signOut() {
+  playSound('click');
+  if (isDemoMode) {
+    isDemoMode = false;
+    state = { categories: [], tasks: [] };
+    showLogin();
+    return;
+  }
+  await sb.auth.signOut();
+}
 
 // ===== DATA LAYER =====
 
@@ -124,14 +204,9 @@ async function loadData() {
 
   state.categories = cats.map(r => ({ id: r.id, name: r.name, color: r.color }));
   state.tasks = tasks.map(r => ({
-    id: r.id,
-    categoryId:  r.category_id,
-    title:       r.title,
-    points:      r.points,
-    completed:   r.completed,
-    completedAt: r.completed_at,
-    datesWorked: r.dates_worked || [],
-    note:        r.note || null
+    id: r.id, categoryId: r.category_id, title: r.title, points: r.points,
+    completed: r.completed, completedAt: r.completed_at,
+    datesWorked: r.dates_worked || [], note: r.note || null
   }));
 }
 
@@ -151,13 +226,8 @@ function renderCatTabs() {
   allTab.className = 'cat-tab' + (activeFilter === 'all' ? ' active' : '');
   allTab.dataset.catId = 'all';
   allTab.innerHTML =
-    `<div class="cat-tab-head">` +
-      `<span class="cat-dot" style="background:#ffffff"></span>` +
-      `<span class="cat-tab-name">ALL</span>` +
-    `</div>` +
-    `<div class="cat-tab-footer">` +
-      `<span class="cat-tab-stats">${state.tasks.length} tasks</span>` +
-    `</div>`;
+    `<div class="cat-tab-head"><span class="cat-dot" style="background:#fff"></span><span class="cat-tab-name">ALL</span></div>` +
+    `<div class="cat-tab-footer"><span class="cat-tab-stats">${state.tasks.length} tasks</span></div>`;
   container.appendChild(allTab);
 
   state.categories.forEach(cat => {
@@ -183,9 +253,7 @@ function renderCatTabs() {
           `<button class="cat-action-btn danger" data-action="del-cat" data-id="${esc(cat.id)}" title="Delete">✕</button>` +
         `</span>` +
       `</div>` +
-      `<div class="cat-tab-track">` +
-        `<div class="cat-tab-fill" style="width:${pct}%;background:${esc(cat.color)}"></div>` +
-      `</div>`;
+      `<div class="cat-tab-track"><div class="cat-tab-fill" style="width:${pct}%;background:${esc(cat.color)}"></div></div>`;
 
     container.appendChild(tab);
   });
@@ -229,20 +297,17 @@ function renderGantt(tasks) {
   const todayD = today();
 
   const hdrCells = days.map(day => {
-    const isToday    = day === todayD;
-    const dayNum     = parseInt(day.split('-')[2], 10);
+    const isToday      = day === todayD;
+    const dayNum       = parseInt(day.split('-')[2], 10);
     const isMonthStart = dayNum === 1;
-    const label      = isToday ? '·T·'
+    const label = isToday ? '·T·'
       : isMonthStart ? new Date(day + 'T12:00:00').toLocaleString('default', { month: 'short' })
       : dayNum;
-    const cls = ['gantt-date-hdr', isToday && 'today', isMonthStart && 'month-start']
-      .filter(Boolean).join(' ');
+    const cls = ['gantt-date-hdr', isToday && 'today', isMonthStart && 'month-start'].filter(Boolean).join(' ');
     return `<th class="${cls}">${label}</th>`;
   }).join('');
 
-  if (tasks.length === 0) {
-    return `<div class="task-list-empty">NO TASKS YET<br>HIT + TASK TO ADD ONE</div>`;
-  }
+  if (tasks.length === 0) return `<div class="task-list-empty">NO TASKS YET<br>HIT + TASK TO ADD ONE</div>`;
 
   const rows = tasks.map(task => {
     const cat   = state.categories.find(c => c.id === task.categoryId);
@@ -251,39 +316,29 @@ function renderGantt(tasks) {
       const worked  = (task.datesWorked || []).includes(day);
       const isToday = day === todayD;
       const cls     = ['gantt-cell', worked && 'worked', isToday && 'today'].filter(Boolean).join(' ');
-      const style   = worked ? ` style="--cell-color:${esc(color)}"` : '';
-      return `<td class="${cls}"${style}></td>`;
+      return `<td class="${cls}"${worked ? ` style="--cell-color:${esc(color)}"` : ''}></td>`;
     }).join('');
-
-    const noteTitle = task.note ? ` title="${esc(task.note)}"` : '';
     return `<tr class="gantt-row${task.completed ? ' done' : ''}">` +
-      `<td class="gantt-task-label gantt-sticky"${noteTitle} data-action="edit" data-id="${esc(task.id)}">${esc(task.title)}</td>` +
-      cells +
-    `</tr>`;
+      `<td class="gantt-task-label gantt-sticky"${task.note ? ` title="${esc(task.note)}"` : ''} data-action="edit" data-id="${esc(task.id)}">${esc(task.title)}</td>` +
+      cells + `</tr>`;
   }).join('');
 
   return `<div class="gantt"><table class="gantt-table">` +
-    `<thead><tr>` +
-      `<th class="gantt-task-hdr gantt-sticky">TASK</th>${hdrCells}` +
-    `</tr></thead>` +
-    `<tbody>${rows}</tbody>` +
-  `</table></div>`;
+    `<thead><tr><th class="gantt-task-hdr gantt-sticky">TASK</th>${hdrCells}</tr></thead>` +
+    `<tbody>${rows}</tbody></table></div>`;
 }
 
 function renderTaskItem(task, todayD) {
-  const cat     = state.categories.find(c => c.id === task.categoryId);
-  const color   = cat ? cat.color  : '#666666';
-  const catName = cat ? cat.name   : '?';
-  const days    = (task.datesWorked || []).length;
+  const cat         = state.categories.find(c => c.id === task.categoryId);
+  const color       = cat ? cat.color : '#666666';
+  const catName     = cat ? cat.name  : '?';
+  const days        = (task.datesWorked || []).length;
   const loggedToday = (task.datesWorked || []).includes(todayD);
   const streak      = loggedToday ? getStreak(task) : 0;
-
-  const logTitle = loggedToday
+  const logTitle    = loggedToday
     ? `${streak} day${streak !== 1 ? 's' : ''} in a row — click to un-log today`
     : 'Log work for today';
-
-  const noteDot  = task.note ? `<span class="task-note-dot" title="${esc(task.note)}"></span>` : '';
-  const titleAttr = task.note ? ` title="${esc(task.note)}"` : '';
+  const noteDot = task.note ? `<span class="task-note-dot" title="${esc(task.note)}"></span>` : '';
 
   return (
     `<div class="task-item${task.completed ? ' done' : ''}" style="--task-color:${esc(color)}">` +
@@ -291,7 +346,7 @@ function renderTaskItem(task, todayD) {
         (task.completed ? '✓' : '') +
       `</div>` +
       `<div class="task-body">` +
-        `<div class="task-title" data-action="edit" data-id="${esc(task.id)}"${titleAttr}>${esc(task.title)}${noteDot}</div>` +
+        `<div class="task-title" data-action="edit" data-id="${esc(task.id)}"${task.note ? ` title="${esc(task.note)}"` : ''}>${esc(task.title)}${noteDot}</div>` +
         `<div class="task-meta">` +
           `<span class="task-cat-badge" style="background:${esc(color)}">${esc(catName)}</span>` +
           `<span class="task-days-badge">⏱ ${days}d worked</span>` +
@@ -301,17 +356,13 @@ function renderTaskItem(task, todayD) {
         `<span class="pts-badge" title="Points value">★ ${task.points} pts</span>` +
         `<button class="px-btn px-btn-small px-btn-log${loggedToday ? ' logged' : ''}" ` +
           `data-action="log" data-id="${esc(task.id)}" title="${esc(logTitle)}">` +
-          (loggedToday ? `STREAK` : `+LOG`) +
+          (loggedToday ? 'STREAK' : '+LOG') +
         `</button>` +
         `<details class="task-menu">` +
           `<summary title="More options">⋮</summary>` +
           `<div class="task-menu-items">` +
-            `<button class="task-menu-item" data-action="note" data-id="${esc(task.id)}">` +
-              `📝 ${task.note ? 'EDIT NOTE' : 'ADD NOTE'}` +
-            `</button>` +
-            `<button class="task-menu-item danger" data-action="del" data-id="${esc(task.id)}">` +
-              `🗑 DELETE` +
-            `</button>` +
+            `<button class="task-menu-item" data-action="note" data-id="${esc(task.id)}">📝 ${task.note ? 'EDIT NOTE' : 'ADD NOTE'}</button>` +
+            `<button class="task-menu-item danger" data-action="del" data-id="${esc(task.id)}">🗑 DELETE</button>` +
           `</div>` +
         `</details>` +
       `</div>` +
@@ -335,17 +386,12 @@ function renderTasks() {
   const total  = tasks.reduce((s, t) => s + t.points, 0);
   ptsEl.textContent = total > 0 ? `★ ${earned} / ${total} PTS` : '';
 
-  let html = '';
+  let html = renderCategoryChips();
 
-  // Category chips (ALL tab only)
-  html += renderCategoryChips();
-
-  // View toggle
-  html +=
-    `<div class="view-toggle">` +
-      `<button class="view-btn${activeView === 'list'  ? ' active' : ''}" data-view="list">LIST</button>` +
-      `<button class="view-btn${activeView === 'gantt' ? ' active' : ''}" data-view="gantt">GANTT</button>` +
-    `</div>`;
+  html += `<div class="view-toggle">` +
+    `<button class="view-btn${activeView === 'list'  ? ' active' : ''}" data-view="list">LIST</button>` +
+    `<button class="view-btn${activeView === 'gantt' ? ' active' : ''}" data-view="gantt">GANTT</button>` +
+  `</div>`;
 
   if (activeView === 'gantt') {
     html += renderGantt(tasks);
@@ -364,11 +410,7 @@ function renderTasks() {
   const todayD     = today();
 
   html += incomplete.map(t => renderTaskItem(t, todayD)).join('');
-
-  if (incomplete.length > 0 && complete.length > 0) {
-    html += '<div class="task-divider">— COMPLETED —</div>';
-  }
-
+  if (incomplete.length > 0 && complete.length > 0) html += '<div class="task-divider">— COMPLETED —</div>';
   html += complete.map(t => renderTaskItem(t, todayD)).join('');
   list.innerHTML = html;
 }
@@ -376,6 +418,7 @@ function renderTasks() {
 // ===== MODALS =====
 
 function openCatModal(catId = null) {
+  playSound('open');
   editingCatId = catId;
   document.getElementById('modal-note').style.display = 'none';
   document.getElementById('modal-task').style.display = 'none';
@@ -407,6 +450,7 @@ function closeCatModal() {
 }
 
 function openTaskModal(taskId = null) {
+  playSound('open');
   editingTaskId = taskId;
   document.getElementById('modal-note').style.display = 'none';
   document.getElementById('modal-cat').style.display  = 'none';
@@ -420,14 +464,12 @@ function openTaskModal(taskId = null) {
   catSelect.innerHTML = '';
   if (state.categories.length === 0) {
     const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = '-- add a category first --';
+    opt.value = ''; opt.textContent = '-- add a category first --';
     catSelect.appendChild(opt);
   } else {
     state.categories.forEach(cat => {
       const opt = document.createElement('option');
-      opt.value = cat.id;
-      opt.textContent = cat.name;
+      opt.value = cat.id; opt.textContent = cat.name;
       catSelect.appendChild(opt);
     });
   }
@@ -455,6 +497,7 @@ function closeTaskModal() {
 }
 
 function openNoteModal(taskId) {
+  playSound('open');
   editingNoteTaskId = taskId;
   const task = state.tasks.find(t => t.id === taskId);
   document.getElementById('modal-cat').style.display  = 'none';
@@ -490,14 +533,25 @@ async function saveCategory() {
   const color = document.getElementById('cat-color-input').value;
   if (!name) { document.getElementById('cat-name-input').focus(); return; }
 
+  playSound('save');
+
+  if (isDemoMode) {
+    if (editingCatId) {
+      const cat = state.categories.find(c => c.id === editingCatId);
+      cat.name = name; cat.color = color;
+    } else {
+      state.categories.push({ id: genId(), name, color });
+    }
+    saveDemoData(); closeCatModal(); render(); return;
+  }
+
   if (editingCatId) {
     const { error } = await sb.from('categories').update({ name, color }).eq('id', editingCatId);
     if (error) { console.error(error); return; }
     const cat = state.categories.find(c => c.id === editingCatId);
     cat.name = name; cat.color = color;
   } else {
-    const { data, error } = await sb.from('categories')
-      .insert({ name, color }).select('id').single();
+    const { data, error } = await sb.from('categories').insert({ name, color }).select('id').single();
     if (error) { console.error(error); return; }
     state.categories.push({ id: data.id, name, color });
   }
@@ -508,9 +562,17 @@ async function deleteCategory(catId) {
   const count = state.tasks.filter(t => t.categoryId === catId).length;
   if (!confirm(count > 0 ? `Delete category and its ${count} task(s)?` : 'Delete this category?')) return;
 
+  playSound('del');
+
+  if (isDemoMode) {
+    state.tasks      = state.tasks.filter(t => t.categoryId !== catId);
+    state.categories = state.categories.filter(c => c.id !== catId);
+    if (activeFilter === catId) activeFilter = 'all';
+    saveDemoData(); render(); return;
+  }
+
   const { error } = await sb.from('categories').delete().eq('id', catId);
   if (error) { console.error(error); return; }
-
   state.tasks      = state.tasks.filter(t => t.categoryId !== catId);
   state.categories = state.categories.filter(c => c.id !== catId);
   if (activeFilter === catId) activeFilter = 'all';
@@ -524,16 +586,27 @@ async function saveTask() {
   if (!title) { document.getElementById('task-title-input').focus(); return; }
   if (!catId) return;
 
+  playSound('save');
+
+  if (isDemoMode) {
+    if (editingTaskId) {
+      const task = state.tasks.find(t => t.id === editingTaskId);
+      task.title = title; task.categoryId = catId; task.points = pts;
+    } else {
+      state.tasks.push({ id: genId(), title, categoryId: catId, points: pts,
+        completed: false, completedAt: null, datesWorked: [], note: null });
+    }
+    saveDemoData(); closeTaskModal(); render(); return;
+  }
+
   if (editingTaskId) {
-    const { error } = await sb.from('tasks')
-      .update({ title, category_id: catId, points: pts }).eq('id', editingTaskId);
+    const { error } = await sb.from('tasks').update({ title, category_id: catId, points: pts }).eq('id', editingTaskId);
     if (error) { console.error(error); return; }
     const task = state.tasks.find(t => t.id === editingTaskId);
     task.title = title; task.categoryId = catId; task.points = pts;
   } else {
     const { data, error } = await sb.from('tasks')
-      .insert({ title, category_id: catId, points: pts,
-                completed: false, completed_at: null, dates_worked: [], note: null })
+      .insert({ title, category_id: catId, points: pts, completed: false, completed_at: null, dates_worked: [], note: null })
       .select('id').single();
     if (error) { console.error(error); return; }
     state.tasks.push({ id: data.id, title, categoryId: catId, points: pts,
@@ -544,6 +617,14 @@ async function saveTask() {
 
 async function saveNote() {
   const note = document.getElementById('note-input').value.trim() || null;
+  playSound('save');
+
+  if (isDemoMode) {
+    const task = state.tasks.find(t => t.id === editingNoteTaskId);
+    task.note = note;
+    saveDemoData(); closeNoteModal(); render(); return;
+  }
+
   const { error } = await sb.from('tasks').update({ note }).eq('id', editingNoteTaskId);
   if (error) { console.error(error); return; }
   const task = state.tasks.find(t => t.id === editingNoteTaskId);
@@ -556,20 +637,19 @@ async function toggleTask(taskId) {
   const completed   = !task.completed;
   const completedAt = completed ? new Date().toISOString() : null;
   const datesWorked = [...(task.datesWorked || [])];
+  if (completed) { const d = today(); if (!datesWorked.includes(d)) datesWorked.push(d); }
 
-  if (completed) {
-    const d = today();
-    if (!datesWorked.includes(d)) datesWorked.push(d);
+  playSound(completed ? 'complete' : 'uncomplete');
+
+  if (isDemoMode) {
+    task.completed = completed; task.completedAt = completedAt; task.datesWorked = datesWorked;
+    saveDemoData(); render(); return;
   }
 
   const { error } = await sb.from('tasks')
-    .update({ completed, completed_at: completedAt, dates_worked: datesWorked })
-    .eq('id', taskId);
+    .update({ completed, completed_at: completedAt, dates_worked: datesWorked }).eq('id', taskId);
   if (error) { console.error(error); return; }
-
-  task.completed   = completed;
-  task.completedAt = completedAt;
-  task.datesWorked = datesWorked;
+  task.completed = completed; task.completedAt = completedAt; task.datesWorked = datesWorked;
   render();
 }
 
@@ -578,18 +658,30 @@ async function toggleWorkDay(taskId) {
   const d           = today();
   const datesWorked = [...(task.datesWorked || [])];
   const idx         = datesWorked.indexOf(d);
-  if (idx === -1) datesWorked.push(d);
-  else            datesWorked.splice(idx, 1);
+  const logging     = idx === -1;
+  if (logging) datesWorked.push(d); else datesWorked.splice(idx, 1);
 
-  const { error } = await sb.from('tasks')
-    .update({ dates_worked: datesWorked }).eq('id', taskId);
+  playSound(logging ? 'log' : 'unlog');
+
+  if (isDemoMode) {
+    task.datesWorked = datesWorked;
+    saveDemoData(); render(); return;
+  }
+
+  const { error } = await sb.from('tasks').update({ dates_worked: datesWorked }).eq('id', taskId);
   if (error) { console.error(error); return; }
-
   task.datesWorked = datesWorked;
   render();
 }
 
 async function deleteTask(taskId) {
+  playSound('del');
+
+  if (isDemoMode) {
+    state.tasks = state.tasks.filter(t => t.id !== taskId);
+    saveDemoData(); render(); return;
+  }
+
   const { error } = await sb.from('tasks').delete().eq('id', taskId);
   if (error) { console.error(error); return; }
   state.tasks = state.tasks.filter(t => t.id !== taskId);
@@ -600,23 +692,29 @@ async function deleteTask(taskId) {
 
 function setupEvents() {
   document.getElementById('btn-google-signin').addEventListener('click', signIn);
+  document.getElementById('btn-try-demo').addEventListener('click', () => { playSound('click'); enterDemoMode(); });
   document.getElementById('btn-signout').addEventListener('click', signOut);
+  document.getElementById('btn-exit-demo').addEventListener('click', () => {
+    isDemoMode = false;
+    state = { categories: [], tasks: [] };
+    showLogin();
+    document.getElementById('demo-banner').style.display = 'none';
+    document.getElementById('btn-signout').style.display = '';
+  });
 
-  document.getElementById('btn-new-category').addEventListener('click', () => openCatModal());
+  document.getElementById('btn-new-category').addEventListener('click', () => { playSound('click'); openCatModal(); });
   document.getElementById('btn-new-task').addEventListener('click', () => {
+    playSound('click');
     state.categories.length === 0 ? openCatModal() : openTaskModal();
   });
 
-  // Category modal
-  document.getElementById('btn-cat-cancel').addEventListener('click', closeCatModal);
+  document.getElementById('btn-cat-cancel').addEventListener('click', () => { playSound('click'); closeCatModal(); });
   document.getElementById('btn-cat-save').addEventListener('click', saveCategory);
   document.getElementById('cat-name-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') saveCategory();
     if (e.key === 'Escape') closeCatModal();
   });
-  document.getElementById('cat-color-input').addEventListener('input', e => {
-    buildColorPresets(e.target.value);
-  });
+  document.getElementById('cat-color-input').addEventListener('input', e => buildColorPresets(e.target.value));
   document.getElementById('color-presets').addEventListener('click', e => {
     const sw = e.target.closest('.color-swatch');
     if (!sw) return;
@@ -624,37 +722,31 @@ function setupEvents() {
     buildColorPresets(sw.dataset.color);
   });
 
-  // Task modal
-  document.getElementById('btn-task-cancel').addEventListener('click', closeTaskModal);
+  document.getElementById('btn-task-cancel').addEventListener('click', () => { playSound('click'); closeTaskModal(); });
   document.getElementById('btn-task-save').addEventListener('click', saveTask);
   document.getElementById('task-title-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') saveTask();
     if (e.key === 'Escape') closeTaskModal();
   });
   document.getElementById('pts-dec').addEventListener('click', () => {
+    playSound('click');
     const inp = document.getElementById('task-pts-input');
     inp.value = Math.max(1, (parseInt(inp.value) || 1) - 1);
   });
   document.getElementById('pts-inc').addEventListener('click', () => {
+    playSound('click');
     const inp = document.getElementById('task-pts-input');
     inp.value = Math.min(9999, (parseInt(inp.value) || 1) + 1);
   });
 
-  // Note modal
-  document.getElementById('btn-note-cancel').addEventListener('click', closeNoteModal);
+  document.getElementById('btn-note-cancel').addEventListener('click', () => { playSound('click'); closeNoteModal(); });
   document.getElementById('btn-note-save').addEventListener('click', saveNote);
-  document.getElementById('note-input').addEventListener('keydown', e => {
-    if (e.key === 'Escape') closeNoteModal();
-  });
+  document.getElementById('note-input').addEventListener('keydown', e => { if (e.key === 'Escape') closeNoteModal(); });
 
-  // Overlay backdrop
   document.getElementById('modal-overlay').addEventListener('click', e => {
-    if (e.target.id === 'modal-overlay') {
-      closeCatModal(); closeTaskModal(); closeNoteModal();
-    }
+    if (e.target.id === 'modal-overlay') { closeCatModal(); closeTaskModal(); closeNoteModal(); }
   });
 
-  // Category tabs
   document.getElementById('cat-tabs').addEventListener('click', e => {
     const actionEl = e.target.closest('[data-action]');
     if (actionEl) {
@@ -662,33 +754,25 @@ function setupEvents() {
       if (actionEl.dataset.action === 'del-cat')  { deleteCategory(actionEl.dataset.id); return; }
     }
     const tab = e.target.closest('.cat-tab');
-    if (tab) { activeFilter = tab.dataset.catId; render(); }
+    if (tab) { playSound('click'); activeFilter = tab.dataset.catId; render(); }
   });
 
-  // Task list — handles chips, view toggle, and all task actions
   document.getElementById('task-list').addEventListener('click', e => {
-    // View toggle
     const viewBtn = e.target.closest('[data-view]');
-    if (viewBtn) { activeView = viewBtn.dataset.view; render(); return; }
+    if (viewBtn) { playSound('click'); activeView = viewBtn.dataset.view; render(); return; }
 
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const { action, id } = el.dataset;
 
-    if      (action === 'filter-cat') { activeFilter = id; render(); }
+    if      (action === 'filter-cat') { playSound('click'); activeFilter = id; render(); }
     else if (action === 'del-cat')    { deleteCategory(id); }
     else if (action === 'new-cat')    { openCatModal(); }
     else if (action === 'toggle')     { toggleTask(id); }
     else if (action === 'edit')       { openTaskModal(id); }
     else if (action === 'log')        { toggleWorkDay(id); }
-    else if (action === 'note') {
-      el.closest('details')?.removeAttribute('open');
-      openNoteModal(id);
-    }
-    else if (action === 'del') {
-      el.closest('details')?.removeAttribute('open');
-      deleteTask(id);
-    }
+    else if (action === 'note')       { el.closest('details')?.removeAttribute('open'); openNoteModal(id); }
+    else if (action === 'del')        { el.closest('details')?.removeAttribute('open'); deleteTask(id); }
   });
 }
 
