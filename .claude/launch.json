@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pixel-tasks",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", ".", "-p", "3401", "--no-clipboard"],
+      "port": 3401
+    }
+  ]
+}
