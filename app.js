@@ -147,37 +147,11 @@ async function initApp() {
     }
   });
 
-  // When GitHub Pages returns bad_oauth_state but token is in the hash,
-  // bypass Supabase's error handling by writing the session to localStorage directly.
+  // Clean up URL from any previous failed OAuth attempt
   const urlParams  = new URLSearchParams(window.location.search);
   const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  if (urlParams.get('error_code') === 'bad_oauth_state' && hashParams.get('access_token')) {
-    const accessToken  = hashParams.get('access_token');
-    const refreshToken = hashParams.get('refresh_token') || '';
-    try {
-      const payload  = JSON.parse(atob(accessToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
-      const storeKey = `sb-${window.SUPABASE_URL.match(/\/\/(.+?)\.supabase/)[1]}-auth-token`;
-      localStorage.setItem(storeKey, JSON.stringify({
-        access_token:  accessToken,
-        refresh_token: refreshToken,
-        expires_at:    payload.exp,
-        expires_in:    payload.exp - Math.floor(Date.now() / 1000),
-        token_type:    'bearer',
-        user: {
-          id: payload.sub, aud: payload.aud, role: payload.role || 'authenticated',
-          email: payload.email, app_metadata: payload.app_metadata || {},
-          user_metadata: payload.user_metadata || {},
-        }
-      }));
-      window.history.replaceState({}, '', window.location.pathname);
-      const { data: { session: recovered } } = await sb.auth.getSession();
-      if (recovered) {
-        isDemoMode = false; currentUser = recovered.user;
-        await loadData(); showApp(); return;
-      }
-    } catch(e) {
-      document.getElementById('login-error').textContent = 'Recovery error: ' + e.message;
-    }
+  if (urlParams.get('error_code') === 'bad_oauth_state') {
+    window.history.replaceState({}, '', window.location.pathname);
   }
 
   sb.auth.onAuthStateChange(async (event, session) => {
@@ -237,6 +211,8 @@ async function loadPublicStats() {
 async function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
+  // Clear any stale local auth state so it doesn't pollute the new OAuth URL
+  await sb.auth.signOut({ scope: 'local' });
   const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
     options: { redirectTo: window.location.origin + window.location.pathname }
