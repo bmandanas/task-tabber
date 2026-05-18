@@ -212,38 +212,97 @@ const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.goo
 function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
-  if (!window.google?.accounts?.id) {
-    document.getElementById('login-error').textContent = 'Google Sign-In not loaded yet — try again in a moment.';
-    return;
+  // Try Google One Tap (works in Chrome). If it doesn't display (Firefox blocks it),
+  // fall back to the popup OAuth flow which works everywhere.
+  if (window.google?.accounts?.id) {
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback:  handleGoogleIdToken,
+      ux_mode:   'popup',
+    });
+    window.google.accounts.id.prompt(n => {
+      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithPopup();
+    });
+  } else {
+    signInWithPopup();
   }
-  window.google.accounts.id.initialize({
-    client_id: GOOGLE_CLIENT_ID,
-    callback:  handleGoogleToken,
-    ux_mode:   'popup',
-  });
-  window.google.accounts.id.prompt(notification => {
-    if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-      document.getElementById('login-error').textContent =
-        'Popup was blocked or skipped — please allow popups for this site and try again.';
-    }
-  });
 }
 
-async function handleGoogleToken({ credential }) {
+async function handleGoogleIdToken({ credential }) {
   document.getElementById('login-error').textContent = '';
-  const { data, error } = await sb.auth.signInWithIdToken({
-    provider: 'google',
-    token:    credential,
-  });
-  if (error) {
-    document.getElementById('login-error').textContent = error.message;
-    return;
-  }
+  const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: credential });
+  if (error) { document.getElementById('login-error').textContent = error.message; return; }
   isDemoMode  = false;
   currentUser = data.session.user;
   await loadData();
   document.getElementById('btn-signout').style.display = '';
   showApp();
+}
+
+async function signInWithPopup() {
+  await sb.auth.signOut({ scope: 'local' });
+  const { data, error } = await sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin + window.location.pathname, skipBrowserRedirect: true }
+  });
+  if (error || !data?.url) {
+    document.getElementById('login-error').textContent = 'Could not start sign-in. Please try again.';
+    return;
+  }
+  const popup = window.open(data.url, 'auth', 'popup,width=520,height=620,left=300,top=80');
+  if (!popup) {
+    document.getElementById('login-error').textContent = 'Popup blocked — please allow popups for this site.';
+    return;
+  }
+  document.getElementById('login-error').textContent = 'Completing sign-in…';
+  let timer = setTimeout(() => {
+    window.removeEventListener('message', onToken);
+    document.getElementById('login-error').textContent = 'Sign-in timed out. Please try again.';
+  }, 120000);
+  async function onToken(event) {
+    if (event.origin !== window.location.origin) return;
+    if (event.data?.type !== 'oauth_tokens') return;
+    clearTimeout(timer);
+    window.removeEventListener('message', onToken);
+    document.getElementById('login-error').textContent = '';
+    await applyOAuthTokens(event.data);
+  }
+  window.addEventListener('message', onToken);
+}
+
+async function applyOAuthTokens({ access_token, refresh_token, expires_at, expires_in }) {
+  // Write directly to Supabase's localStorage slot so getSession() picks it up.
+  // setSession() rejects bad_oauth_state refresh tokens server-side; this bypasses that.
+  try {
+    const payload    = JSON.parse(atob(access_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+    const projectRef = window.SUPABASE_URL.match(/\/\/(.+?)\.supabase/)[1];
+    localStorage.setItem(`sb-${projectRef}-auth-token`, JSON.stringify({
+      access_token,
+      refresh_token,
+      expires_at:  parseInt(expires_at)  || payload.exp,
+      expires_in:  parseInt(expires_in)  || 3600,
+      token_type:  'bearer',
+      user: {
+        id: payload.sub, aud: payload.aud,
+        role: payload.role || 'authenticated',
+        email: payload.email, phone: payload.phone || '',
+        app_metadata: payload.app_metadata || {},
+        user_metadata: payload.user_metadata || {},
+        created_at: new Date().toISOString(),
+      }
+    }));
+    const { data: { session } } = await sb.auth.getSession();
+    if (session) {
+      isDemoMode = false; currentUser = session.user;
+      await loadData();
+      document.getElementById('btn-signout').style.display = '';
+      showApp();
+    } else {
+      document.getElementById('login-error').textContent = 'Session not found after sign-in. Please try again.';
+    }
+  } catch(e) {
+    document.getElementById('login-error').textContent = 'Sign-in error: ' + e.message;
+  }
 }
 
 async function signOut() {
