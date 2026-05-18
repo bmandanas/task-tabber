@@ -138,7 +138,13 @@ async function initApp() {
     return;
   }
 
-  sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+  sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession:    true,
+      detectSessionInUrl: true,
+      storage:           window.localStorage,
+    }
+  });
 
   sb.auth.onAuthStateChange(async (event, session) => {
     if (session) {
@@ -154,9 +160,8 @@ async function initApp() {
       showLogin();
     }
   });
-
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) showLogin();
+  // No getSession() call — onAuthStateChange fires with INITIAL_SESSION and handles
+  // both the fresh-load and the post-OAuth-redirect cases without a race condition.
 }
 
 function showLogin() {
