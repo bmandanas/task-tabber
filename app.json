@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Task Tabber",
+    "slug": "task-tabber",
+    "version": "1.0.0",
+    "scheme": "task-tabber",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#0d0d1a"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.yourname.tasktabber"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d0d1a"
+      },
+      "package": "com.yourname.tasktabber"
+    },
+    "plugins": [
+      "expo-font"
+    ],
+    "web": {
+      "bundler": "metro",
+      "baseUrl": "/task-tabber/"
+    }
+  }
+}
