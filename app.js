@@ -147,21 +147,36 @@ async function initApp() {
   });
 
   sb.auth.onAuthStateChange(async (event, session) => {
+    console.log('[auth]', event, session ? session.user?.email : 'no session');
     if (session) {
       isDemoMode  = false;
       currentUser = session.user;
-      await loadData();
+      try { await loadData(); } catch(e) { console.error('[auth] loadData failed', e); }
       document.getElementById('demo-banner').style.display = 'none';
       document.getElementById('btn-signout').style.display = '';
       showApp();
-    } else if (!isDemoMode) {
+    } else if (event === 'SIGNED_OUT' && !isDemoMode) {
       currentUser = null;
       state = { categories: [], tasks: [] };
       showLogin();
     }
+    // INITIAL_SESSION with no session = login screen already visible, do nothing
   });
-  // No getSession() call — onAuthStateChange fires with INITIAL_SESSION and handles
-  // both the fresh-load and the post-OAuth-redirect cases without a race condition.
+
+  // Explicit getSession handles localStorage + URL hash tokens reliably
+  const { data: { session }, error: sessionErr } = await sb.auth.getSession();
+  console.log('[auth] getSession =>', session ? session.user?.email : 'null', sessionErr || '');
+  if (session) {
+    isDemoMode  = false;
+    currentUser = session.user;
+    try { await loadData(); } catch(e) { console.error('[auth] loadData failed', e); }
+    document.getElementById('demo-banner').style.display = 'none';
+    document.getElementById('btn-signout').style.display = '';
+    showApp();
+  } else if (!window.location.hash.includes('access_token')) {
+    showLogin();
+  }
+  // If hash has access_token, wait — onAuthStateChange will fire with the session
 }
 
 function showLogin() {
