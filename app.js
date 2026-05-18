@@ -170,6 +170,21 @@ function showApp() {
   const email = isDemoMode ? 'DEMO' : (currentUser?.email || '');
   document.getElementById('user-email').textContent = email;
   render();
+  loadPublicStats();
+  if (!window._statInterval) {
+    window._statInterval = setInterval(loadPublicStats, 60000);
+  }
+}
+
+async function loadPublicStats() {
+  if (!sb) return;
+  try {
+    const { data } = await sb.rpc('get_public_stats');
+    if (!data) return;
+    document.getElementById('stat-users').textContent = data.users_count ?? '—';
+    document.getElementById('stat-done').textContent  = data.completed_count ?? '—';
+    document.getElementById('header-stats').style.display = 'flex';
+  } catch (_) {}
 }
 
 async function signIn() {
