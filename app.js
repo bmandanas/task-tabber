@@ -226,7 +226,7 @@ async function signIn() {
   document.getElementById('login-error').textContent = '';
   const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.href }
+    options: { redirectTo: window.location.origin + window.location.pathname }
   });
   if (error) document.getElementById('login-error').textContent = error.message;
 }
