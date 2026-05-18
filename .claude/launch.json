@@ -2,10 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "pixel-tasks",
+      "name": "task-tabber",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", ".", "-p", "3401", "--no-clipboard"],
-      "port": 3401
+      "runtimeArgs": ["expo", "start", "--web", "--port", "19006"],
+      "port": 19006
     }
   ]
 }
