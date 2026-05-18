@@ -147,11 +147,6 @@ async function initApp() {
     }
   });
 
-  // Clean up any stale OAuth redirect params in the URL
-  if (window.location.search || window.location.hash) {
-    window.history.replaceState({}, '', window.location.pathname);
-  }
-
   sb.auth.onAuthStateChange(async (event, session) => {
     if (session) {
       isDemoMode  = false;
@@ -166,6 +161,27 @@ async function initApp() {
       showLogin();
     }
   });
+
+  // Intercept OAuth tokens from hash BEFORE cleaning up URL.
+  // Supabase reports bad_oauth_state in the query string but still puts the
+  // valid access_token in the hash — grab it here to bypass the server error.
+  const hashParams  = new URLSearchParams(window.location.hash.slice(1));
+  const accessToken = hashParams.get('access_token');
+  if (accessToken) {
+    window.history.replaceState({}, '', window.location.pathname);
+    await applyOAuthTokens({
+      access_token:  accessToken,
+      refresh_token: hashParams.get('refresh_token') || '',
+      expires_at:    hashParams.get('expires_at')    || '',
+      expires_in:    hashParams.get('expires_in')    || '',
+    });
+    return;
+  }
+
+  // Clean up any leftover OAuth params in the URL
+  if (window.location.search || window.location.hash) {
+    window.history.replaceState({}, '', window.location.pathname);
+  }
 
   // Check for existing session (returning user with localStorage session)
   const { data: { session } } = await sb.auth.getSession();
@@ -212,8 +228,8 @@ const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.goo
 function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
-  // Try Google One Tap (works in Chrome). If it doesn't display (Firefox blocks it),
-  // fall back to the popup OAuth flow which works everywhere.
+  // Chrome: try Google One Tap (signInWithIdToken — no redirect needed).
+  // Firefox/others: fall back to full-page redirect.
   if (window.google?.accounts?.id) {
     window.google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
@@ -221,10 +237,10 @@ function signIn() {
       ux_mode:   'popup',
     });
     window.google.accounts.id.prompt(n => {
-      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithPopup();
+      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithRedirect();
     });
   } else {
-    signInWithPopup();
+    signInWithRedirect();
   }
 }
 
@@ -239,35 +255,15 @@ async function handleGoogleIdToken({ credential }) {
   showApp();
 }
 
-async function signInWithPopup() {
+async function signInWithRedirect() {
   await sb.auth.signOut({ scope: 'local' });
-  const { data, error } = await sb.auth.signInWithOAuth({
+  const { error } = await sb.auth.signInWithOAuth({
     provider: 'google',
-    options: { redirectTo: window.location.origin + window.location.pathname, skipBrowserRedirect: true }
+    options: { redirectTo: window.location.origin + window.location.pathname }
   });
-  if (error || !data?.url) {
+  if (error) {
     document.getElementById('login-error').textContent = 'Could not start sign-in. Please try again.';
-    return;
   }
-  const popup = window.open(data.url, 'auth', 'popup,width=520,height=620,left=300,top=80');
-  if (!popup) {
-    document.getElementById('login-error').textContent = 'Popup blocked — please allow popups for this site.';
-    return;
-  }
-  document.getElementById('login-error').textContent = 'Completing sign-in…';
-  let timer = setTimeout(() => {
-    window.removeEventListener('message', onToken);
-    document.getElementById('login-error').textContent = 'Sign-in timed out. Please try again.';
-  }, 120000);
-  async function onToken(event) {
-    if (event.origin !== window.location.origin) return;
-    if (event.data?.type !== 'oauth_tokens') return;
-    clearTimeout(timer);
-    window.removeEventListener('message', onToken);
-    document.getElementById('login-error').textContent = '';
-    await applyOAuthTokens(event.data);
-  }
-  window.addEventListener('message', onToken);
 }
 
 async function applyOAuthTokens({ access_token, refresh_token, expires_at, expires_in }) {
