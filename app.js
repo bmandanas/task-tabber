@@ -147,10 +147,8 @@ async function initApp() {
     }
   });
 
-  // Clean up URL from any previous failed OAuth attempt
-  const urlParams  = new URLSearchParams(window.location.search);
-  const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  if (urlParams.get('error_code') === 'bad_oauth_state') {
+  // Clean up any stale OAuth redirect params in the URL
+  if (window.location.search || window.location.hash) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
@@ -158,7 +156,7 @@ async function initApp() {
     if (session) {
       isDemoMode  = false;
       currentUser = session.user;
-      try { await loadData(); } catch(e) { console.error('[auth] loadData failed', e); }
+      try { await loadData(); } catch(e) {}
       document.getElementById('demo-banner').style.display = 'none';
       document.getElementById('btn-signout').style.display = '';
       showApp();
@@ -169,13 +167,14 @@ async function initApp() {
     }
   });
 
+  // Check for existing session (returning user with localStorage session)
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
     isDemoMode  = false;
     currentUser = session.user;
     await loadData();
     showApp();
-  } else if (!hashParams.get('access_token')) {
+  } else {
     showLogin();
   }
 }
@@ -208,16 +207,43 @@ async function loadPublicStats() {
   } catch (_) {}
 }
 
-async function signIn() {
+const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.googleusercontent.com';
+
+function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
-  // Clear any stale local auth state so it doesn't pollute the new OAuth URL
-  await sb.auth.signOut({ scope: 'local' });
-  const { error } = await sb.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo: window.location.origin + window.location.pathname }
+  if (!window.google?.accounts?.id) {
+    document.getElementById('login-error').textContent = 'Google Sign-In not loaded yet — try again in a moment.';
+    return;
+  }
+  window.google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback:  handleGoogleToken,
+    ux_mode:   'popup',
   });
-  if (error) document.getElementById('login-error').textContent = error.message;
+  window.google.accounts.id.prompt(notification => {
+    if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+      document.getElementById('login-error').textContent =
+        'Popup was blocked or skipped — please allow popups for this site and try again.';
+    }
+  });
+}
+
+async function handleGoogleToken({ credential }) {
+  document.getElementById('login-error').textContent = '';
+  const { data, error } = await sb.auth.signInWithIdToken({
+    provider: 'google',
+    token:    credential,
+  });
+  if (error) {
+    document.getElementById('login-error').textContent = error.message;
+    return;
+  }
+  isDemoMode  = false;
+  currentUser = data.session.user;
+  await loadData();
+  document.getElementById('btn-signout').style.display = '';
+  showApp();
 }
 
 async function signOut() {
