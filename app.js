@@ -140,9 +140,10 @@ async function initApp() {
 
   sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
     auth: {
-      persistSession:    true,
+      persistSession:     true,
       detectSessionInUrl: true,
-      storage:           window.localStorage,
+      storage:            window.localStorage,
+      flowType:           'implicit',
     }
   });
 
