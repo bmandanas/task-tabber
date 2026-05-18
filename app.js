@@ -141,9 +141,8 @@ async function initApp() {
   sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
     auth: {
       persistSession:     true,
-      detectSessionInUrl: true,
+      detectSessionInUrl: false,
       storage:            window.localStorage,
-      flowType:           'implicit',
     }
   });
 
@@ -155,35 +154,31 @@ async function initApp() {
       document.getElementById('demo-banner').style.display = 'none';
       document.getElementById('btn-signout').style.display = '';
       showApp();
-    } else if (event === 'SIGNED_OUT' && !isDemoMode) {
+    } else if (event === 'SIGNED_OUT' && !isDemoMode && currentUser !== null) {
       currentUser = null;
       state = { categories: [], tasks: [] };
       showLogin();
     }
   });
 
-  // Intercept OAuth tokens from hash BEFORE cleaning up URL.
-  // Supabase reports bad_oauth_state in the query string but still puts the
-  // valid access_token in the hash — grab it here to bypass the server error.
-  const hashParams  = new URLSearchParams(window.location.hash.slice(1));
-  const accessToken = hashParams.get('access_token');
-  if (accessToken) {
+  // Check for Google OAuth2 id_token in hash (Firefox full-page redirect flow).
+  // This bypasses Supabase's OAuth redirect and its broken state management.
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const idToken    = hashParams.get('id_token');
+  if (idToken) {
     window.history.replaceState({}, '', window.location.pathname);
-    await applyOAuthTokens({
-      access_token:  accessToken,
-      refresh_token: hashParams.get('refresh_token') || '',
-      expires_at:    hashParams.get('expires_at')    || '',
-      expires_in:    hashParams.get('expires_in')    || '',
-    });
+    const rawNonce = localStorage.getItem('google_oauth_nonce') || undefined;
+    localStorage.removeItem('google_oauth_nonce');
+    await handleGoogleIdToken({ credential: idToken, nonce: rawNonce });
     return;
   }
 
-  // Clean up any leftover OAuth params in the URL
+  // Clean up any leftover redirect params
   if (window.location.search || window.location.hash) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
-  // Check for existing session (returning user with localStorage session)
+  // Check for existing session (returning user with stored session)
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
     isDemoMode  = false;
@@ -228,8 +223,8 @@ const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.goo
 function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
-  // Chrome: try Google One Tap (signInWithIdToken — no redirect needed).
-  // Firefox/others: fall back to full-page redirect.
+  // Chrome: Google One Tap (no redirect, signInWithIdToken directly).
+  // Firefox/others: direct Google OAuth2 redirect → id_token in hash → signInWithIdToken.
   if (window.google?.accounts?.id) {
     window.google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
@@ -237,16 +232,20 @@ function signIn() {
       ux_mode:   'popup',
     });
     window.google.accounts.id.prompt(n => {
-      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithRedirect();
+      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithGoogleOAuth();
     });
   } else {
-    signInWithRedirect();
+    signInWithGoogleOAuth();
   }
 }
 
-async function handleGoogleIdToken({ credential }) {
+async function handleGoogleIdToken({ credential, nonce }) {
   document.getElementById('login-error').textContent = '';
-  const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: credential });
+  const { data, error } = await sb.auth.signInWithIdToken({
+    provider: 'google',
+    token:    credential,
+    nonce:    nonce,
+  });
   if (error) { document.getElementById('login-error').textContent = error.message; return; }
   isDemoMode  = false;
   currentUser = data.session.user;
@@ -255,50 +254,23 @@ async function handleGoogleIdToken({ credential }) {
   showApp();
 }
 
-async function signInWithRedirect() {
-  await sb.auth.signOut({ scope: 'local' });
-  const { error } = await sb.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo: window.location.origin + window.location.pathname }
+async function signInWithGoogleOAuth() {
+  // Direct Google OAuth2 implicit flow — bypasses Supabase's OAuth redirect
+  // entirely, so bad_oauth_state can never occur.
+  const rawNonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+  const hashBuf     = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawNonce));
+  const hashedNonce = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+  localStorage.setItem('google_oauth_nonce', rawNonce);
+  const params = new URLSearchParams({
+    response_type: 'id_token',
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  window.location.origin + window.location.pathname,
+    nonce:         hashedNonce,
+    scope:         'openid email profile',
+    prompt:        'select_account',
   });
-  if (error) {
-    document.getElementById('login-error').textContent = 'Could not start sign-in. Please try again.';
-  }
-}
-
-async function applyOAuthTokens({ access_token, refresh_token, expires_at, expires_in }) {
-  // Write directly to Supabase's localStorage slot so getSession() picks it up.
-  // setSession() rejects bad_oauth_state refresh tokens server-side; this bypasses that.
-  try {
-    const payload    = JSON.parse(atob(access_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
-    const projectRef = window.SUPABASE_URL.match(/\/\/(.+?)\.supabase/)[1];
-    localStorage.setItem(`sb-${projectRef}-auth-token`, JSON.stringify({
-      access_token,
-      refresh_token,
-      expires_at:  parseInt(expires_at)  || payload.exp,
-      expires_in:  parseInt(expires_in)  || 3600,
-      token_type:  'bearer',
-      user: {
-        id: payload.sub, aud: payload.aud,
-        role: payload.role || 'authenticated',
-        email: payload.email, phone: payload.phone || '',
-        app_metadata: payload.app_metadata || {},
-        user_metadata: payload.user_metadata || {},
-        created_at: new Date().toISOString(),
-      }
-    }));
-    const { data: { session } } = await sb.auth.getSession();
-    if (session) {
-      isDemoMode = false; currentUser = session.user;
-      await loadData();
-      document.getElementById('btn-signout').style.display = '';
-      showApp();
-    } else {
-      document.getElementById('login-error').textContent = 'Session not found after sign-in. Please try again.';
-    }
-  } catch(e) {
-    document.getElementById('login-error').textContent = 'Sign-in error: ' + e.message;
-  }
+  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
 }
 
 async function signOut() {
