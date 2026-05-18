@@ -147,8 +147,27 @@ async function initApp() {
     }
   });
 
+  // When GitHub Pages returns bad_oauth_state but the token is still in the hash,
+  // Supabase's client refuses to process it. Manually recover the session.
+  const urlParams  = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  if (urlParams.get('error_code') === 'bad_oauth_state' && hashParams.get('access_token')) {
+    const { data, error } = await sb.auth.setSession({
+      access_token:  hashParams.get('access_token'),
+      refresh_token: hashParams.get('refresh_token') || '',
+    });
+    window.history.replaceState({}, '', window.location.pathname);
+    if (data?.session) {
+      isDemoMode  = false;
+      currentUser = data.session.user;
+      await loadData();
+      showApp();
+      return;
+    }
+    console.error('[auth] setSession recovery failed', error);
+  }
+
   sb.auth.onAuthStateChange(async (event, session) => {
-    console.log('[auth]', event, session ? session.user?.email : 'no session');
     if (session) {
       isDemoMode  = false;
       currentUser = session.user;
@@ -161,23 +180,17 @@ async function initApp() {
       state = { categories: [], tasks: [] };
       showLogin();
     }
-    // INITIAL_SESSION with no session = login screen already visible, do nothing
   });
 
-  // Explicit getSession handles localStorage + URL hash tokens reliably
-  const { data: { session }, error: sessionErr } = await sb.auth.getSession();
-  console.log('[auth] getSession =>', session ? session.user?.email : 'null', sessionErr || '');
+  const { data: { session } } = await sb.auth.getSession();
   if (session) {
     isDemoMode  = false;
     currentUser = session.user;
-    try { await loadData(); } catch(e) { console.error('[auth] loadData failed', e); }
-    document.getElementById('demo-banner').style.display = 'none';
-    document.getElementById('btn-signout').style.display = '';
+    await loadData();
     showApp();
-  } else if (!window.location.hash.includes('access_token')) {
+  } else if (!hashParams.get('access_token')) {
     showLogin();
   }
-  // If hash has access_token, wait — onAuthStateChange will fire with the session
 }
 
 function showLogin() {
