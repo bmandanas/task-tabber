@@ -162,20 +162,27 @@ async function initApp() {
   });
 
   // Check for Google OAuth2 id_token in hash (Firefox full-page redirect flow).
-  // This bypasses Supabase's OAuth redirect and its broken state management.
-  const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  const idToken    = hashParams.get('id_token');
-  if (idToken) {
+  const hashParams   = new URLSearchParams(window.location.hash.slice(1));
+  const searchParams = new URLSearchParams(window.location.search.slice(1));
+  const idToken      = hashParams.get('id_token');
+  const oauthError   = hashParams.get('error') || searchParams.get('error');
+
+  if (window.location.search || window.location.hash) {
     window.history.replaceState({}, '', window.location.pathname);
+  }
+
+  if (idToken) {
     const rawNonce = localStorage.getItem('google_oauth_nonce') || undefined;
     localStorage.removeItem('google_oauth_nonce');
     await handleGoogleIdToken({ credential: idToken, nonce: rawNonce });
     return;
   }
 
-  // Clean up any leftover redirect params
-  if (window.location.search || window.location.hash) {
-    window.history.replaceState({}, '', window.location.pathname);
+  if (oauthError) {
+    const desc = hashParams.get('error_description') || searchParams.get('error_description') || oauthError;
+    showLogin();
+    document.getElementById('login-error').textContent = 'Sign-in error: ' + decodeURIComponent(desc.replace(/\+/g,' '));
+    return;
   }
 
   // Check for existing session (returning user with stored session)
@@ -231,7 +238,10 @@ function signIn() {
       callback:  handleGoogleIdToken,
       ux_mode:   'popup',
     });
+    let fired = false;
+    const fallback = setTimeout(() => { if (!fired) signInWithGoogleOAuth(); }, 2000);
     window.google.accounts.id.prompt(n => {
+      fired = true; clearTimeout(fallback);
       if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithGoogleOAuth();
     });
   } else {
