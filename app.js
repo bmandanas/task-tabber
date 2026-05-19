@@ -166,31 +166,28 @@ async function initApp() {
   const rawSearch    = window.location.search;
   const hashParams   = new URLSearchParams(rawHash.slice(1));
   const searchParams = new URLSearchParams(rawSearch.slice(1));
-  const idToken      = hashParams.get('id_token');
-  const oauthError   = hashParams.get('error') || searchParams.get('error');
+  const authCode     = searchParams.get('code');
+  const oauthError   = searchParams.get('error') || hashParams.get('error');
 
   if (rawSearch || rawHash) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
-  if (idToken) {
-    const rawNonce = localStorage.getItem('google_oauth_nonce') || undefined;
-    localStorage.removeItem('google_oauth_nonce');
-    await handleGoogleIdToken({ credential: idToken, nonce: rawNonce });
+  if (authCode) {
+    await exchangeGoogleCode(authCode);
     return;
   }
 
   if (oauthError) {
-    const desc = hashParams.get('error_description') || searchParams.get('error_description') || oauthError;
+    const desc = searchParams.get('error_description') || hashParams.get('error_description') || oauthError;
     showLogin();
     document.getElementById('login-error').textContent = 'Sign-in error: ' + decodeURIComponent(desc.replace(/\+/g,' '));
     return;
   }
 
-  // DEBUG: if we got redirected back but found nothing useful, show what came back
   if (rawHash || rawSearch) {
     showLogin();
-    document.getElementById('login-error').textContent = 'DEBUG - returned params: ' + (rawSearch + rawHash).slice(0, 120);
+    document.getElementById('login-error').textContent = 'Unexpected redirect params: ' + (rawSearch + rawHash).slice(0, 120);
     return;
   }
 
@@ -277,22 +274,51 @@ async function handleGoogleIdToken({ credential, nonce }) {
 }
 
 async function signInWithGoogleOAuth() {
-  // Direct Google OAuth2 implicit flow — bypasses Supabase's OAuth redirect
-  // entirely, so bad_oauth_state can never occur.
-  const rawNonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-    .map(b => b.toString(16).padStart(2, '0')).join('');
-  const hashBuf     = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawNonce));
-  const hashedNonce = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
-  localStorage.setItem('google_oauth_nonce', rawNonce);
+  // PKCE authorization code flow — Google deprecated implicit id_token for new clients.
+  // We exchange the code for an id_token via Google's token endpoint, then use signInWithIdToken.
+  const verifier  = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  const buf       = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge = btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+  localStorage.setItem('google_pkce_verifier', verifier);
   const params = new URLSearchParams({
-    response_type: 'id_token',
-    client_id:     GOOGLE_CLIENT_ID,
-    redirect_uri:  window.location.origin + window.location.pathname,
-    nonce:         hashedNonce,
-    scope:         'openid email profile',
-    prompt:        'select_account',
+    response_type:         'code',
+    client_id:             GOOGLE_CLIENT_ID,
+    redirect_uri:          window.location.origin + window.location.pathname,
+    code_challenge:        challenge,
+    code_challenge_method: 'S256',
+    scope:                 'openid email profile',
+    prompt:                'select_account',
   });
   window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+}
+
+async function exchangeGoogleCode(code) {
+  const verifier   = localStorage.getItem('google_pkce_verifier') || '';
+  const redirectUri = window.location.origin + window.location.pathname;
+  localStorage.removeItem('google_pkce_verifier');
+  localStorage.removeItem('google_oauth_nonce');
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id:     GOOGLE_CLIENT_ID,
+        code_verifier: verifier,
+        redirect_uri:  redirectUri,
+        grant_type:    'authorization_code',
+      }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error_description || json.error || `HTTP ${res.status}`);
+    if (!json.id_token) throw new Error('No id_token in Google response');
+    await handleGoogleIdToken({ credential: json.id_token });
+  } catch(e) {
+    showLogin();
+    document.getElementById('login-error').textContent = 'Sign-in error: ' + e.message;
+  }
 }
 
 async function signOut() {
