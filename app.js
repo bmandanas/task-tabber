@@ -162,12 +162,14 @@ async function initApp() {
   });
 
   // Check for Google OAuth2 id_token in hash (Firefox full-page redirect flow).
-  const hashParams   = new URLSearchParams(window.location.hash.slice(1));
-  const searchParams = new URLSearchParams(window.location.search.slice(1));
+  const rawHash      = window.location.hash;
+  const rawSearch    = window.location.search;
+  const hashParams   = new URLSearchParams(rawHash.slice(1));
+  const searchParams = new URLSearchParams(rawSearch.slice(1));
   const idToken      = hashParams.get('id_token');
   const oauthError   = hashParams.get('error') || searchParams.get('error');
 
-  if (window.location.search || window.location.hash) {
+  if (rawSearch || rawHash) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
@@ -182,6 +184,13 @@ async function initApp() {
     const desc = hashParams.get('error_description') || searchParams.get('error_description') || oauthError;
     showLogin();
     document.getElementById('login-error').textContent = 'Sign-in error: ' + decodeURIComponent(desc.replace(/\+/g,' '));
+    return;
+  }
+
+  // DEBUG: if we got redirected back but found nothing useful, show what came back
+  if (rawHash || rawSearch) {
+    showLogin();
+    document.getElementById('login-error').textContent = 'DEBUG - returned params: ' + (rawSearch + rawHash).slice(0, 120);
     return;
   }
 
@@ -232,7 +241,10 @@ function signIn() {
   document.getElementById('login-error').textContent = '';
   // Chrome: Google One Tap (no redirect, signInWithIdToken directly).
   // Firefox/others: direct Google OAuth2 redirect → id_token in hash → signInWithIdToken.
-  if (window.google?.accounts?.id) {
+  // Only use GIS One Tap in browsers with FedCM support (Chrome/Edge).
+  // Firefox loads the GIS script but shows a broken dialog — skip it there.
+  const hasFedCM = 'IdentityCredential' in window;
+  if (window.google?.accounts?.id && hasFedCM) {
     window.google.accounts.id.initialize({
       client_id: GOOGLE_CLIENT_ID,
       callback:  handleGoogleIdToken,
