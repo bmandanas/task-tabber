@@ -4,25 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TASK TABBER</title>
-  <!-- Runs before anything else: if this is a popup OAuth callback, relay tokens and close -->
-  <script>
-    (function() {
-      if (!window.opener) return;
-      var h = new URLSearchParams(window.location.hash.slice(1));
-      var token = h.get('access_token');
-      if (!token) return;
-      try {
-        window.opener.postMessage({
-          type: 'oauth_tokens',
-          access_token:  token,
-          refresh_token: h.get('refresh_token') || '',
-          expires_at:    h.get('expires_at')    || '',
-          expires_in:    h.get('expires_in')    || '3600',
-        }, window.location.origin);
-      } catch(e) {}
-      window.close();
-    })();
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
@@ -38,6 +19,7 @@
       <button id="btn-google-signin" class="px-btn px-btn-primary login-btn">
         ▶ SIGN IN WITH GOOGLE
       </button>
+      <div id="gsi-btn-wrap" style="display:none;justify-content:center"></div>
       <div class="login-divider">— OR —</div>
       <button id="btn-try-demo" class="px-btn login-btn login-btn-demo">
         TRY WITHOUT SIGNING IN

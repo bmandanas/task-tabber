@@ -133,17 +133,12 @@ function enterDemoMode() {
 async function initApp() {
   if (!window.SUPABASE_URL || window.SUPABASE_URL === 'YOUR_SUPABASE_URL') {
     document.getElementById('login-error').textContent = 'config.js not filled in — see SETUP.md';
-    document.getElementById('btn-google-signin').disabled = true;
     showLogin();
     return;
   }
 
   sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
-    auth: {
-      persistSession:     true,
-      detectSessionInUrl: false,
-      storage:            window.localStorage,
-    }
+    auth: { persistSession: true, detectSessionInUrl: false, storage: window.localStorage }
   });
 
   sb.auth.onAuthStateChange(async (event, session) => {
@@ -161,37 +156,11 @@ async function initApp() {
     }
   });
 
-  // Check for Google OAuth2 id_token in hash (Firefox full-page redirect flow).
-  const rawHash      = window.location.hash;
-  const rawSearch    = window.location.search;
-  const hashParams   = new URLSearchParams(rawHash.slice(1));
-  const searchParams = new URLSearchParams(rawSearch.slice(1));
-  const authCode     = searchParams.get('code');
-  const oauthError   = searchParams.get('error') || hashParams.get('error');
-
-  if (rawSearch || rawHash) {
+  // Clean up any stray redirect params
+  if (window.location.search || window.location.hash) {
     window.history.replaceState({}, '', window.location.pathname);
   }
 
-  if (authCode) {
-    await exchangeGoogleCode(authCode);
-    return;
-  }
-
-  if (oauthError) {
-    const desc = searchParams.get('error_description') || hashParams.get('error_description') || oauthError;
-    showLogin();
-    document.getElementById('login-error').textContent = 'Sign-in error: ' + decodeURIComponent(desc.replace(/\+/g,' '));
-    return;
-  }
-
-  if (rawHash || rawSearch) {
-    showLogin();
-    document.getElementById('login-error').textContent = 'Unexpected redirect params: ' + (rawSearch + rawHash).slice(0, 120);
-    return;
-  }
-
-  // Check for existing session (returning user with stored session)
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
     isDemoMode  = false;
@@ -200,6 +169,30 @@ async function initApp() {
     showApp();
   } else {
     showLogin();
+    waitForGSI();
+  }
+}
+
+// Wait for the GIS script to load, then set up the sign-in button.
+function waitForGSI() {
+  if (window.google?.accounts?.id) { initGoogleSignIn(); return; }
+  setTimeout(waitForGSI, 150);
+}
+
+function initGoogleSignIn() {
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback:  handleGoogleIdToken,
+    ux_mode:   'popup',
+  });
+  // FedCM browsers (Chrome/Edge): keep the custom button — One Tap handles it.
+  // Non-FedCM browsers (Firefox): swap the custom button for the GIS button.
+  // GIS popup flow needs only the JS origin (already registered), not a redirect URI.
+  if (!('IdentityCredential' in window)) {
+    const wrap = document.getElementById('gsi-btn-wrap');
+    google.accounts.id.renderButton(wrap, { theme: 'outline', size: 'large', width: 280 });
+    wrap.style.display                                           = 'flex';
+    document.getElementById('btn-google-signin').style.display  = 'none';
   }
 }
 
@@ -233,92 +226,41 @@ async function loadPublicStats() {
 
 const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.googleusercontent.com';
 
+// Called by the custom button in Chrome/Edge (FedCM browsers).
+// Firefox uses the GIS-rendered button directly — this function is not called there.
 function signIn() {
   playSound('click');
   document.getElementById('login-error').textContent = '';
-  // Chrome: Google One Tap (no redirect, signInWithIdToken directly).
-  // Firefox/others: direct Google OAuth2 redirect → id_token in hash → signInWithIdToken.
-  // Only use GIS One Tap in browsers with FedCM support (Chrome/Edge).
-  // Firefox loads the GIS script but shows a broken dialog — skip it there.
-  const hasFedCM = 'IdentityCredential' in window;
-  if (window.google?.accounts?.id && hasFedCM) {
-    window.google.accounts.id.initialize({
-      client_id: GOOGLE_CLIENT_ID,
-      callback:  handleGoogleIdToken,
-      ux_mode:   'popup',
-    });
-    let fired = false;
-    const fallback = setTimeout(() => { if (!fired) signInWithGoogleOAuth(); }, 2000);
-    window.google.accounts.id.prompt(n => {
-      fired = true; clearTimeout(fallback);
-      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithGoogleOAuth();
-    });
-  } else {
-    signInWithGoogleOAuth();
+  if (!window.google?.accounts?.id) {
+    document.getElementById('login-error').textContent = 'Sign-in loading… please try again.';
+    return;
   }
+  let fired = false;
+  const fallback = setTimeout(() => {
+    if (!fired) {
+      // One Tap didn't show — surface the GIS button as fallback
+      document.getElementById('gsi-btn-wrap').style.display = 'flex';
+      document.getElementById('btn-google-signin').style.display = 'none';
+    }
+  }, 2000);
+  google.accounts.id.prompt(n => {
+    fired = true; clearTimeout(fallback);
+    if (n.isNotDisplayed() || n.isSkippedMoment()) {
+      document.getElementById('gsi-btn-wrap').style.display = 'flex';
+      document.getElementById('btn-google-signin').style.display = 'none';
+    }
+  });
 }
 
-async function handleGoogleIdToken({ credential, nonce }) {
+async function handleGoogleIdToken({ credential }) {
   document.getElementById('login-error').textContent = '';
-  const { data, error } = await sb.auth.signInWithIdToken({
-    provider: 'google',
-    token:    credential,
-    nonce:    nonce,
-  });
+  const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: credential });
   if (error) { document.getElementById('login-error').textContent = error.message; return; }
   isDemoMode  = false;
   currentUser = data.session.user;
   await loadData();
   document.getElementById('btn-signout').style.display = '';
   showApp();
-}
-
-async function signInWithGoogleOAuth() {
-  // PKCE authorization code flow — Google deprecated implicit id_token for new clients.
-  // We exchange the code for an id_token via Google's token endpoint, then use signInWithIdToken.
-  const verifier  = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
-  const buf       = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
-  localStorage.setItem('google_pkce_verifier', verifier);
-  const params = new URLSearchParams({
-    response_type:         'code',
-    client_id:             GOOGLE_CLIENT_ID,
-    redirect_uri:          (window.location.origin + window.location.pathname).replace(/\/?$/, '/'),
-    code_challenge:        challenge,
-    code_challenge_method: 'S256',
-    scope:                 'openid email profile',
-    prompt:                'select_account',
-  });
-  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
-}
-
-async function exchangeGoogleCode(code) {
-  const verifier    = localStorage.getItem('google_pkce_verifier') || '';
-  const redirectUri = (window.location.origin + window.location.pathname).replace(/\/?$/, '/');
-  localStorage.removeItem('google_pkce_verifier');
-  localStorage.removeItem('google_oauth_nonce');
-  try {
-    const res = await fetch('https://oauth2.googleapis.com/token', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code,
-        client_id:     GOOGLE_CLIENT_ID,
-        code_verifier: verifier,
-        redirect_uri:  redirectUri,
-        grant_type:    'authorization_code',
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error_description || json.error || `HTTP ${res.status}`);
-    if (!json.id_token) throw new Error('No id_token in Google response');
-    await handleGoogleIdToken({ credential: json.id_token });
-  } catch(e) {
-    showLogin();
-    document.getElementById('login-error').textContent = 'Sign-in error: ' + e.message;
-  }
 }
 
 async function signOut() {
