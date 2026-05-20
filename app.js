@@ -285,7 +285,7 @@ async function signInWithGoogleOAuth() {
   const params = new URLSearchParams({
     response_type:         'code',
     client_id:             GOOGLE_CLIENT_ID,
-    redirect_uri:          window.location.origin + window.location.pathname,
+    redirect_uri:          (window.location.origin + window.location.pathname).replace(/\/?$/, '/'),
     code_challenge:        challenge,
     code_challenge_method: 'S256',
     scope:                 'openid email profile',
@@ -295,8 +295,8 @@ async function signInWithGoogleOAuth() {
 }
 
 async function exchangeGoogleCode(code) {
-  const verifier   = localStorage.getItem('google_pkce_verifier') || '';
-  const redirectUri = window.location.origin + window.location.pathname;
+  const verifier    = localStorage.getItem('google_pkce_verifier') || '';
+  const redirectUri = (window.location.origin + window.location.pathname).replace(/\/?$/, '/');
   localStorage.removeItem('google_pkce_verifier');
   localStorage.removeItem('google_oauth_nonce');
   try {
