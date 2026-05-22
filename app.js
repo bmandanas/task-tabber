@@ -129,50 +129,74 @@ function enterDemoMode() {
 }
 
 // ===== AUTH =====
+// Flow:
+//   Chrome/Edge  → Google One Tap (FedCM) → signInWithIdToken
+//   All browsers → Supabase signInWithOAuth in a popup window
+//     • Parent stores PKCE verifier in localStorage via skipBrowserRedirect:true
+//     • Popup navigates: Google → Supabase callback → back to our page with ?code=
+//     • Supabase in popup auto-exchanges code (detectSessionInUrl:true, shared localStorage)
+//     • Popup closes; parent's onAuthStateChange fires via storage event
+//
+// Google Cloud Console needs: https://[project].supabase.co/auth/v1/callback as redirect URI
+// (NOT bmandanas.github.io — that's no longer needed as a redirect URI)
+
+const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.googleusercontent.com';
+const APP_URL          = 'https://bmandanas.github.io/task-tabber/';
 
 async function initApp() {
   if (!window.SUPABASE_URL || window.SUPABASE_URL === 'YOUR_SUPABASE_URL') {
     document.getElementById('login-error').textContent = 'config.js not filled in — see SETUP.md';
-    showLogin();
-    return;
+    showLogin(); return;
   }
 
+  // detectSessionInUrl MUST be true so the popup can exchange ?code= automatically.
   sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, detectSessionInUrl: false, storage: window.localStorage }
+    auth: { persistSession: true, detectSessionInUrl: true, storage: window.localStorage }
   });
 
+  // ── POPUP MODE ───────────────────────────────────────────────────────────────
+  // When Supabase redirects the popup back to our page it lands here with ?code=.
+  // detectSessionInUrl:true already started the exchange in the constructor;
+  // we just wait for SIGNED_IN then close the window.
+  if (window.opener) {
+    sb.auth.onAuthStateChange(event => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        setTimeout(() => window.close(), 300);
+      }
+    });
+    // Surface any OAuth errors back to the parent before closing.
+    const p = new URLSearchParams(window.location.search);
+    const oauthErr = p.get('error');
+    if (oauthErr) {
+      const msg = decodeURIComponent((p.get('error_description') || oauthErr).replace(/\+/g, ' '));
+      try { window.opener.postMessage({ type: 'oauth-error', msg }, window.location.origin); } catch (_) {}
+      setTimeout(() => window.close(), 400);
+    }
+    return; // don't render the full app inside the popup
+  }
+
+  // ── NORMAL MODE ──────────────────────────────────────────────────────────────
+  // React to auth state changes (cross-tab session sync fires this too, so the
+  // parent window picks up the session the popup just stored).
   sb.auth.onAuthStateChange(async (event, session) => {
     if (session) {
-      isDemoMode  = false;
-      currentUser = session.user;
-      try { await loadData(); } catch(e) {}
+      isDemoMode = false; currentUser = session.user;
+      try { await loadData(); } catch (_) {}
       document.getElementById('demo-banner').style.display = 'none';
       document.getElementById('btn-signout').style.display = '';
       showApp();
     } else if (event === 'SIGNED_OUT' && !isDemoMode && currentUser !== null) {
-      currentUser = null;
-      state = { categories: [], tasks: [] };
-      showLogin();
+      currentUser = null; state = { categories: [], tasks: [] }; showLogin();
     }
   });
 
-  // Handle PKCE callback: Google returns ?code= after the user authenticates.
-  const searchParams = new URLSearchParams(window.location.search);
-  const authCode     = searchParams.get('code');
-  const authError    = searchParams.get('error');
-
-  if (window.location.search || window.location.hash) {
-    window.history.replaceState({}, '', window.location.pathname);
-  }
-
-  if (authCode) { await exchangeGoogleCode(authCode); return; }
-
-  if (authError) {
-    showLogin();
-    const desc = searchParams.get('error_description') || authError;
-    document.getElementById('login-error').textContent = 'Sign-in error: ' + decodeURIComponent(desc.replace(/\+/g,' '));
-    return;
-  }
+  // Receive error messages posted from the OAuth popup.
+  window.addEventListener('message', e => {
+    if (e.origin !== window.location.origin) return;
+    if (e.data?.type === 'oauth-error') {
+      document.getElementById('login-error').textContent = 'Sign-in error: ' + e.data.msg;
+    }
+  });
 
   const { data: { session } } = await sb.auth.getSession();
   if (session) {
@@ -180,14 +204,74 @@ async function initApp() {
     await loadData(); showApp();
   } else {
     showLogin();
-    // Pre-init One Tap for Chrome so it's ready when the button is clicked.
-    if ('IdentityCredential' in window) waitForGSI();
+    if ('IdentityCredential' in window) waitForGSI(); // pre-warm One Tap for Chrome
   }
 }
 
+// ── ONE TAP (Chrome/Edge only) ────────────────────────────────────────────────
 function waitForGSI() {
   if (!window.google?.accounts?.id) { setTimeout(waitForGSI, 150); return; }
-  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleIdToken, ux_mode: 'popup' });
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleOneTapCredential });
+}
+
+async function handleOneTapCredential({ credential }) {
+  const { error } = await sb.auth.signInWithIdToken({ provider: 'google', token: credential });
+  if (error) document.getElementById('login-error').textContent = error.message;
+  // onAuthStateChange handles the rest
+}
+
+// ── SIGN-IN ENTRY POINT ───────────────────────────────────────────────────────
+function signIn() {
+  playSound('click');
+  document.getElementById('login-error').textContent = '';
+  if ('IdentityCredential' in window && window.google?.accounts?.id) {
+    // Chrome/Edge: One Tap first, OAuth popup as fallback.
+    let fired = false;
+    const fallback = setTimeout(() => { if (!fired) openOAuthPopup(); }, 2000);
+    google.accounts.id.prompt(n => {
+      fired = true; clearTimeout(fallback);
+      if (n.isNotDisplayed() || n.isSkippedMoment()) openOAuthPopup();
+    });
+  } else {
+    openOAuthPopup(); // Firefox, Safari, all others
+  }
+}
+
+// ── OAUTH POPUP ───────────────────────────────────────────────────────────────
+async function openOAuthPopup() {
+  // skipBrowserRedirect:true → Supabase stores PKCE verifier in localStorage and
+  // returns the auth URL without navigating.  The popup shares our localStorage
+  // (same origin), so when it lands back here the verifier is still available.
+  const { data, error } = await sb.auth.signInWithOAuth({
+    provider: 'google',
+    options: {
+      redirectTo: APP_URL,
+      skipBrowserRedirect: true,
+      queryParams: { prompt: 'select_account' },
+    },
+  });
+  if (error) { document.getElementById('login-error').textContent = error.message; return; }
+
+  const W = 520, H = 620;
+  const popup = window.open(
+    data.url, 'googleAuth',
+    `width=${W},height=${H},left=${Math.round((screen.width-W)/2)},top=${Math.round((screen.height-H)/2)}`
+  );
+  if (!popup || popup.closed) {
+    document.getElementById('login-error').textContent = 'Popup blocked — please allow popups for this site and try again.';
+    return;
+  }
+
+  document.getElementById('login-error').textContent = 'Waiting for Google sign-in…';
+
+  // Clear the status message once the popup closes (success or cancel).
+  const timer = setInterval(() => {
+    if (popup.closed) {
+      clearInterval(timer);
+      const el = document.getElementById('login-error');
+      if (el.textContent === 'Waiting for Google sign-in…') el.textContent = '';
+    }
+  }, 400);
 }
 
 function showLogin() {
@@ -202,9 +286,7 @@ function showApp() {
   document.getElementById('user-email').textContent = email;
   render();
   loadPublicStats();
-  if (!window._statInterval) {
-    window._statInterval = setInterval(loadPublicStats, 60000);
-  }
+  if (!window._statInterval) window._statInterval = setInterval(loadPublicStats, 60000);
 }
 
 async function loadPublicStats() {
@@ -216,73 +298,6 @@ async function loadPublicStats() {
     document.getElementById('stat-done').textContent  = data.completed_count ?? '—';
     document.getElementById('header-stats').style.display = 'flex';
   } catch (_) {}
-}
-
-const GOOGLE_CLIENT_ID = '565994478896-57aq1v7g5n4kuqvat0aeaisgs33g41sj.apps.googleusercontent.com';
-
-function signIn() {
-  playSound('click');
-  document.getElementById('login-error').textContent = '';
-  if ('IdentityCredential' in window && window.google?.accounts?.id) {
-    // Chrome/Edge: try One Tap first; fall back to PKCE if it doesn't show.
-    let fired = false;
-    const fallback = setTimeout(() => { if (!fired) signInWithPKCE(); }, 2000);
-    google.accounts.id.prompt(n => {
-      fired = true; clearTimeout(fallback);
-      if (n.isNotDisplayed() || n.isSkippedMoment()) signInWithPKCE();
-    });
-  } else {
-    // Firefox and all other browsers: PKCE redirect flow.
-    // redirect_uri is https://bmandanas.github.io/task-tabber/ — registered in Google Cloud Console.
-    signInWithPKCE();
-  }
-}
-
-async function signInWithPKCE() {
-  const verifier  = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
-  const buf       = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  const challenge = btoa(String.fromCharCode(...new Uint8Array(buf)))
-    .replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
-  localStorage.setItem('google_pkce_verifier', verifier);
-  const redirectUri = 'https://bmandanas.github.io/task-tabber/';
-  window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
-    response_type: 'code', client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: redirectUri, code_challenge: challenge,
-    code_challenge_method: 'S256', scope: 'openid email profile', prompt: 'select_account',
-  });
-}
-
-async function exchangeGoogleCode(code) {
-  const verifier   = localStorage.getItem('google_pkce_verifier') || '';
-  localStorage.removeItem('google_pkce_verifier');
-  try {
-    const res  = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code, client_id: GOOGLE_CLIENT_ID, code_verifier: verifier,
-        redirect_uri: 'https://bmandanas.github.io/task-tabber/', grant_type: 'authorization_code',
-      }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error_description || json.error || 'HTTP ' + res.status);
-    if (!json.id_token) throw new Error('No id_token in response');
-    await handleGoogleIdToken({ credential: json.id_token });
-  } catch(e) {
-    showLogin();
-    document.getElementById('login-error').textContent = 'Sign-in error: ' + e.message;
-  }
-}
-
-async function handleGoogleIdToken({ credential }) {
-  document.getElementById('login-error').textContent = '';
-  const { data, error } = await sb.auth.signInWithIdToken({ provider: 'google', token: credential });
-  if (error) { document.getElementById('login-error').textContent = error.message; return; }
-  isDemoMode  = false;
-  currentUser = data.session.user;
-  await loadData();
-  document.getElementById('btn-signout').style.display = '';
-  showApp();
 }
 
 async function signOut() {
